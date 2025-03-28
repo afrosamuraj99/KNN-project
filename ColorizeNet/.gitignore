@@ -140,3 +140,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Custom
+/out_imgs
+/val_imgs
+/colorized_0.jpg
