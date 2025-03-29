@@ -1,6 +1,9 @@
-numpy
-tensorflow
+--find-links https://download.pytorch.org/whl/torch_stable.html
+jax[cuda12]
 flax
+numpy
 Pillow
 absl-py
 tqdm
+tensorflow
+torch
