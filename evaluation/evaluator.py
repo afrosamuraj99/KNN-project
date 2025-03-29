@@ -650,4 +650,6 @@ def _numpy_partition(arr, kth, **kwargs):
 
 
 if __name__ == "__main__":
+    from safe_gpu import safe_gpu
+    safe_gpu.claim_gpus(1, safe_gpu.TensorflowPlaceholder)
     main()

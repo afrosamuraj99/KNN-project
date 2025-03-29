@@ -1,4 +1,7 @@
-tensorflow-gpu>=2.0
+numpy
 scipy
-requests
+pillow
 tqdm
+safe-gpu
+requests
+tensorflow[and-cuda]>=2.0
