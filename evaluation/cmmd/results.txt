@@ -1,0 +1,23 @@
+================================================================================
+~/data/datasets/coco/train_imgs/resized_512 ~/data/ColorizeNet/out_imgs/512
+--------------------------------------------------------------------------------
+Calculating embeddings for 30000 images from /home/xbanak01/data/datasets/coco/train_imgs/resized_512.
+Calculating embeddings for 5000 images from /home/xbanak01/data/ColorizeNet/out_imgs/512.
+The CMMD value is:  0.288
+================================================================================
+
+================================================================================
+~/data/datasets/coco/train_imgs/resized_512 ~/data/datasets/coco/val_imgs/resized_512
+--------------------------------------------------------------------------------
+Calculating embeddings for 30000 images from /home/xbanak01/data/datasets/coco/train_imgs/resized_512.
+Calculating embeddings for 5000 images from /home/xbanak01/data/datasets/coco/val_imgs/resized_512.
+The CMMD value is:  0.008
+================================================================================
+
+================================================================================
+~/data/datasets/coco/train_imgs/resized_128 ~/data/datasets/coco/val_imgs/resized_128
+--------------------------------------------------------------------------------
+Calculating embeddings for 30000 images from /home/xbanak01/data/datasets/coco/train_imgs/resized_128.
+Calculating embeddings for 5000 images from /home/xbanak01/data/datasets/coco/val_imgs/resized_128.
+The CMMD value is:  0.009
+================================================================================
