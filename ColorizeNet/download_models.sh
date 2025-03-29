@@ -1,0 +1,2 @@
+wget https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.ckpt?download=true -O weights/sd/v2-1_768-ema-pruned.ckpt
+wget https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned.ckpt?download=true -O weights/sd/v1-5-pruned.ckpt
