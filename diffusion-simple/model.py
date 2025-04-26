@@ -187,7 +187,6 @@ class PreNorm(nn.Module):
 class Unet(nn.Module):
     def __init__(
         self,
-        dim,
         init_dim=None,
         out_dim=None,
         dim_mults=(1, 2, 4, 8),
@@ -202,20 +201,19 @@ class Unet(nn.Module):
         self.self_condition = self_condition
         input_channels = channels * (2 if self_condition else 1)
 
-        init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0) # changed to 1 and 0 from 7,3
 
-        dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        dims = [init_dim, *map(lambda m: init_dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
         block_klass = partial(ResnetBlock, groups=resnet_block_groups)
 
         # time embeddings
-        time_dim = dim * 4
+        time_dim = init_dim * 4
 
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(dim),
-            nn.Linear(dim, time_dim),
+            SinusoidalPositionEmbeddings(init_dim),
+            nn.Linear(init_dim, time_dim),
             nn.GELU(),
             nn.Linear(time_dim, time_dim),
         )
@@ -264,8 +262,8 @@ class Unet(nn.Module):
 
         self.out_dim = default(out_dim, channels)
 
-        self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
-        self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
+        self.final_res_block = block_klass(init_dim * 2, init_dim, time_emb_dim=time_dim)
+        self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
     def forward(self, x, time, x_self_cond=None):
         if self.self_condition:
@@ -309,22 +307,33 @@ class Unet(nn.Module):
         return self.final_conv(x)
 
 
-def save(model, optimizer, image_size, channels, dim_mults, path):
+def save(model, optimizer, init_dim, image_size, channels, dim_mults, path):
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "init_dim": init_dim,
         "image_size": image_size,
         "channels": channels,
         "dim_mults": dim_mults,
     }, path)
 
-def load(path, device, mode):
+def save_ema(model, init_dim, image_size, channels, dim_mults, ema_decay, path):
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "init_dim": init_dim,
+        "image_size": image_size,
+        "channels": channels,
+        "dim_mults": dim_mults,
+        "ema_decay": ema_decay,
+    }, path)
+
+def load(path, mode):
     checkpoint = torch.load(path, weights_only=True, mmap=True)
 
     with torch.device("meta"):
         model = Unet(
-            dim=checkpoint["image_size"],
             channels=checkpoint["channels"],
+            init_dim=checkpoint["init_dim"],
             dim_mults=checkpoint["dim_mults"],
         )
     model.load_state_dict(checkpoint["model_state_dict"], assign=True)
@@ -340,3 +349,25 @@ def load(path, device, mode):
         RuntimeError("Supported modes are 'eval' or 'train'")
 
     return model, optimizer
+
+def load_ema(path, mode):
+    checkpoint = torch.load(path, weights_only=True, mmap=True)
+
+    with torch.device("meta"):
+        model = Unet(
+            channels=checkpoint["channels"],
+            init_dim=checkpoint["init_dim"],
+            dim_mults=checkpoint["dim_mults"],
+        )
+    model.load_state_dict(checkpoint["model_state_dict"], assign=True)
+
+    ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"]))
+
+    if mode == "eval":
+        model.eval()
+    elif mode == "train":
+        model.train()
+    else:
+        RuntimeError("Supported modes are 'eval' or 'train'")
+
+    return ema_model

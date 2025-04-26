@@ -24,12 +24,20 @@ def reverse_transform(image):
 
 def latest_checkpoint(checkpoints_folder):
     latest_checkpoint_path = None
+    latest_ema_checkpoint_path = None
     epoch = -1
+    ema_epoch = -1
     for chkpt_path in checkpoints_folder.iterdir():
-        parts = chkpt_path.stem.split("-", 1)
-        assert len(parts) == 2
+        parts = chkpt_path.stem.split("-", 2)
+        assert len(parts) == 3
         chkpt_epoch = int(parts[1])
-        if chkpt_epoch > epoch:
-            epoch = chkpt_epoch
+        if parts[2] == "ema":
+            if chkpt_epoch > ema_epoch:
+                ema_epoch = chkpt_epoch
+            latest_ema_checkpoint_path = chkpt_path
+        else:
+            if chkpt_epoch > epoch:
+                epoch = chkpt_epoch
             latest_checkpoint_path = chkpt_path
-    return latest_checkpoint_path
+    assert epoch == ema_epoch
+    return latest_checkpoint_path, latest_ema_checkpoint_path
