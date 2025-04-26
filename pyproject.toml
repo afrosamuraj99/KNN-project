@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "blobfile>=3.0.0",
     "einops>=0.8.1",
+    "guided-diffusion",
     "numpy>=2.2.5",
     "torch>=2.7.0",
     "torchvision>=0.22.0",
@@ -26,6 +28,7 @@ explicit = true
 torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
 torchaudio = [{ index = "pytorch-cu128" }]
+guided-diffusion = { path = "diffusion", editable = true }
 
 [dependency-groups]
 dev = [

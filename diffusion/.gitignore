@@ -1,3 +1,6 @@
-.DS_Store
-__pycache__/
 classify_image_graph_def.pb
+/datasets
+/*.egg-info
+/logs-train
+/logs-sample
+/openai-models
