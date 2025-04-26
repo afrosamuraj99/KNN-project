@@ -15,7 +15,7 @@ from utils.misc import (
     reverse_transform, latest_checkpoint,
 )
 from scheduling import linear_beta_schedule, extract
-from model import load, save, Unet
+from model import load, load_ema, save, save_ema, Unet
 
 
 timesteps = 1000

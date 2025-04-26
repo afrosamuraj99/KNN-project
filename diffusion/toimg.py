@@ -9,7 +9,7 @@ if __name__ == "__main__":
     ap.add_argument("npz")
     args = ap.parse_args()
 
-    out_path = Path("./logs-sampled/images")
+    out_path = Path("./logs-sample/images")
     out_path.mkdir(exist_ok=True, parents=True)
     for f_path in out_path.iterdir():
         f_path.unlink()
