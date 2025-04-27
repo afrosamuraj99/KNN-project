@@ -231,11 +231,11 @@ if __name__ == "__main__":
 
             if step != 0 and step % save_and_sample_every == 0:
                 milestone = step // save_and_sample_every
-                track_samples(results_folder, epoch, milestone, ema_model, microbatch_size, image_size, channels)
+                track_samples(results_folder, epoch, milestone, model, microbatch_size, image_size, channels)
 
         history[epoch] = loss_history
 
-        track_samples(results_folder, epoch, "last", ema_model, microbatch_size, image_size, channels)
+        track_samples(results_folder, epoch, "last", model, microbatch_size, image_size, channels)
         save(model, optimizer, init_dim, image_size, channels, dim_mults, str(checkpoints_folder / f"epoch-{epoch:06d}-model.pth"))
         save_ema(ema_model, init_dim, image_size, channels, dim_mults, ema_decay, str(checkpoints_folder / f"epoch-{epoch:06d}-ema.pth"))
 
