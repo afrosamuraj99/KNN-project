@@ -34,10 +34,27 @@ def latest_checkpoint(checkpoints_folder):
         if parts[2] == "ema":
             if chkpt_epoch > ema_epoch:
                 ema_epoch = chkpt_epoch
-            latest_ema_checkpoint_path = chkpt_path
+                latest_ema_checkpoint_path = chkpt_path
         else:
             if chkpt_epoch > epoch:
                 epoch = chkpt_epoch
-            latest_checkpoint_path = chkpt_path
+                latest_checkpoint_path = chkpt_path
     assert epoch == ema_epoch
     return latest_checkpoint_path, latest_ema_checkpoint_path
+
+def epoch_checkpoint(checkpoints_folder, epoch):
+    checkpoint_path = None
+    ema_checkpoint_path = None
+    for chkpt_path in checkpoints_folder.iterdir():
+        parts = chkpt_path.stem.split("-", 2)
+        assert len(parts) == 3
+        chkpt_epoch = int(parts[1])
+        if parts[2] == "ema":
+            if chkpt_epoch == epoch:
+                ema_checkpoint_path = chkpt_path
+        else:
+            if chkpt_epoch == epoch:
+                checkpoint_path = chkpt_path
+        if checkpoint_path is not None and ema_checkpoint_path is not None:
+            break
+    return checkpoint_path, ema_checkpoint_path
