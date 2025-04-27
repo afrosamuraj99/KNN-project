@@ -1,6 +1,7 @@
 import copy
 import functools
 import os
+from pathlib import Path
 
 import blobfile as bf
 import torch as th
@@ -255,7 +256,15 @@ def get_blob_logdir():
 def find_resume_checkpoint():
     # On your infrastructure, you may want to override this to automatically
     # discover the latest checkpoint on your blob storage, etc.
-    return None
+    dir = Path(logger.get_dir())
+    latest = -1
+    latest_path = None
+    for model_path in dir.glob("model*.pt"):
+        num = parse_resume_step_from_filename(str(model_path))
+        if num > latest:
+            latest = num
+            latest_path = model_path
+    return str(latest_path)
 
 
 def find_ema_checkpoint(main_checkpoint, step, rate):
