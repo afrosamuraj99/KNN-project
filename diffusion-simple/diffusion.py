@@ -250,12 +250,16 @@ if __name__ == "__main__":
         start_epoch = 1
         history = {}
     else:
+        schedule_kwargs_path = out_path / "schedule_kwargs.pt"
         sched_kwargs = load_schedule_kwargs(schedule_kwargs_path)
+        history_path = out_path / "history.pkl"
         with history_path.open("rb") as f:
             history = pickle.load(f)
             history_keys = list(history.keys())
-        assert len(history_keys)
-        start_epoch = max(history_keys) + 1
+        if len(history_keys) == 0:
+            start_epoch = 1
+        else:
+            start_epoch = max(history_keys) + 1
         model = load_model(checkpoint_path, "train")
         model.to(device)
         optimizer = load_optimizer(optimizer_path, model)
