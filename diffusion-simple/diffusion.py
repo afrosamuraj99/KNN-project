@@ -242,7 +242,7 @@ if __name__ == "__main__":
 
     if checkpoint_path is None:
         print("Creating new model")
-        sched_kwargs = {"betas": betas_f(timesteps=timesteps)}
+        schedule_kwargs = {"betas": betas_f(timesteps=timesteps)}
         model = Unet(**unet_kwargs)
         model.to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0)
@@ -251,7 +251,7 @@ if __name__ == "__main__":
         history = {}
     else:
         schedule_kwargs_path = out_path / "schedule_kwargs.pt"
-        sched_kwargs = load_schedule_kwargs(schedule_kwargs_path)
+        schedule_kwargs = load_schedule_kwargs(schedule_kwargs_path)
         history_path = out_path / "history.pkl"
         with history_path.open("rb") as f:
             history = pickle.load(f)
@@ -266,15 +266,16 @@ if __name__ == "__main__":
         ema_model = load_ema(ema_checkpoint_path, "train")
         print(f"Loaded old model, starting on epoch {start_epoch}")
 
-    schedule = Schedule(**sched_kwargs)
-    ddim_schedule = ScheduleDDIM(ddim_timesteps, schedule, **sched_kwargs)
+    schedule = Schedule(**schedule_kwargs)
+    ddim_schedule = ScheduleDDIM(ddim_timesteps, schedule, **schedule_kwargs)
 
-    save_all(0, model, ema_model, optimizer, unet_kwargs, history, sched_kwargs, out_path)
+    save_all(0, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
+    step = 1
 
     for epoch in tqdm(range(start_epoch, start_epoch + epochs), unit="epoch"):
         loss_history = deque()
 
-        for step, batch in tqdm(enumerate(train_dataloader), unit="batch", unit_scale=True, total=nr_batches, leave=False):
+        for batch in tqdm(train_dataloader, unit="batch", unit_scale=True, total=nr_batches, leave=False):
             optimizer.zero_grad()
 
             batch_size = batch["img"].shape[0]
@@ -301,7 +302,9 @@ if __name__ == "__main__":
 
             if step != 0 and step % save_and_sample_every == 0:
                 milestone = step // save_and_sample_every
-                track_samples(results_folder, epoch, milestone, model, microbatch_size, image_size, channels, sched=ddim_schedule)
+                track_samples(out_path, epoch, milestone, model, microbatch_size, image_size, channels, sched=ddim_schedule)
+
+            step += 1
 
         history[epoch] = loss_history
         save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
