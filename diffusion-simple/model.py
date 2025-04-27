@@ -307,58 +307,36 @@ class Unet(nn.Module):
         return self.final_conv(x)
 
 
-def save(model, optimizer, init_dim, image_size, channels, dim_mults, path):
+def save_model(model, unet_kwargs, path):
     torch.save({
         "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "init_dim": init_dim,
-        "image_size": image_size,
-        "channels": channels,
-        "dim_mults": dim_mults,
+        "unet_kwargs": unet_kwargs,
     }, path)
 
-def save_ema(model, init_dim, image_size, channels, dim_mults, ema_decay, path):
+def save_ema(ema_model, ema_decay, unet_kwargs, path):
     torch.save({
-        "model_state_dict": model.state_dict(),
-        "init_dim": init_dim,
-        "image_size": image_size,
-        "channels": channels,
-        "dim_mults": dim_mults,
+        "model_state_dict": ema_model.state_dict(),
         "ema_decay": ema_decay,
+        "unet_kwargs": unet_kwargs,
     }, path)
 
-def load(path, mode):
+def save_optimizer(optimizer, path):
+    torch.save({
+        "optimizer_state_dict": optimizer.state_dict(),
+    }, path)
+
+def load_model(path, mode):
     checkpoint = torch.load(path, weights_only=True, mmap=True)
-
     with torch.device("meta"):
-        model = Unet(
-            channels=checkpoint["channels"],
-            init_dim=checkpoint["init_dim"],
-            dim_mults=checkpoint["dim_mults"],
-        )
+        model = Unet(**checkpoint["unet_kwargs"])
     model.load_state_dict(checkpoint["model_state_dict"], assign=True)
-
-    optimizer = torch.optim.Adam(model.parameters())
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-    if mode == "eval":
-        model.eval()
-    elif mode == "train":
-        model.train()
-    else:
-        RuntimeError("Supported modes are 'eval' or 'train'")
-
-    return model, optimizer
+    return model
 
 def load_ema(path, mode):
     checkpoint = torch.load(path, weights_only=True, mmap=True)
 
     with torch.device("meta"):
-        model = Unet(
-            channels=checkpoint["channels"],
-            init_dim=checkpoint["init_dim"],
-            dim_mults=checkpoint["dim_mults"],
-        )
+        model = Unet(**checkpoint["unet_kwargs"])
         ema_model = torch.optim.swa_utils.AveragedModel(
             model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"])
         )
@@ -373,3 +351,9 @@ def load_ema(path, mode):
         RuntimeError("Supported modes are 'eval' or 'train'")
 
     return ema_model
+
+def load_optimizer(path, model):
+    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    optimizer = torch.optim.Adam(model.parameters())
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return optimizer

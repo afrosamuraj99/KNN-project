@@ -1,61 +1,62 @@
 import argparse
-import pickle
 import os
 from pathlib import Path
 
-import numpy as np
 import torch
 import torchvision
 
-from model import load, load_ema
+from model import load_model, load_ema
 from utils.misc import num_to_groups, latest_checkpoint, epoch_checkpoint
 from diffusion import sample
+from scheduling import Schedule, ScheduleDDIM, load_schedule_kwargs, linear_beta_schedule
 
 
-def old_load(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=True, map_location=torch.device('cpu'))
-
+def load_model_v2(path, mode):
+    from model import Unet
+    checkpoint = torch.load(path, weights_only=True, mmap=True)
     with torch.device("meta"):
         model = Unet(
             channels=checkpoint["channels"],
-            init_dim=checkpoint["image_size"],
+            init_dim=checkpoint["init_dim"],
             dim_mults=checkpoint["dim_mults"],
         )
     model.load_state_dict(checkpoint["model_state_dict"], assign=True)
-
-    optimizer = torch.optim.Adam(model.parameters())
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
     if mode == "eval":
         model.eval()
     elif mode == "train":
         model.train()
     else:
         RuntimeError("Supported modes are 'eval' or 'train'")
+    return model
 
-    return model, optimizer
+def load_ema_v2(path, mode):
+    from model import Unet
+    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    with torch.device("meta"):
+        model = Unet(
+            channels=checkpoint["channels"],
+            init_dim=checkpoint["init_dim"],
+            dim_mults=checkpoint["dim_mults"],
+        )
+        ema_model = torch.optim.swa_utils.AveragedModel(
+            model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"])
+        )
+    ema_model.load_state_dict(checkpoint["model_state_dict"], assign=True)
+    if mode == "eval":
+        ema_model.eval()
+    elif mode == "train":
+        ema_model.train()
+    else:
+        RuntimeError("Supported modes are 'eval' or 'train'")
+    return ema_model
 
-def old_do(epoch):
-    model, opt = old_load(f"./out/basic/checkpoints/epoch-{epoch}.pth", "train")
-    batches = num_to_groups(1, 1)
-    all_images_list = list(map(lambda n: sample(model, image_size=128, batch_size=n, channels=3), batches))
-    all_images = torch.cat(all_images_list, dim=0)
-    all_images = (all_images + 1) / 2
-    torchvision.utils.save_image(all_images, f"sample-{epoch}.png", nrow=8)
+def get_sched_kwargs_v2():
+    sched_kwargs = {"betas": linear_beta_schedule(timesteps=1000)}
+    return sched_kwargs
 
-def load_history(path_str, print=True):
-    with open(path_str, "rb") as f:
-        hist = pickle.load(f)
-    if print:
-        for k, v in hist.items():
-            a = np.array(v)
-            if len(a):
-                print(k, np.max(v))
-    return hist
-
-def do(model, out):
+def do(model, out, sched):
     batches = num_to_groups(16, 16)
-    all_images_list = list(map(lambda n: sample(model, image_size=128, batch_size=n, channels=3), batches))
+    all_images_list = list(map(lambda n: sample(model, sched=sched, image_size=128, batch_size=n, channels=3), batches))
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
     torchvision.utils.save_image(all_images, out, nrow=8)
@@ -65,29 +66,65 @@ if __name__ == "__main__":
     assert len(os.environ["CUDA_VISIBLE_DEVICES"]) == 1
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", required=True)
+
+    group1 = ap.add_mutually_exclusive_group(required=True)
+    group1.add_argument("--name")
+    group1.add_argument("--checkpoint")
+
+    group2 = ap.add_mutually_exclusive_group(required=True)
+    group2.add_argument("--ddpm", action="store_true")
+    group2.add_argument("--ddim", action="store_true")
+
+    ap.add_argument("--out", required=True)
     ap.add_argument("--ema", action="store_true")
     ap.add_argument("--epoch", required=False, type=int, default=-1)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--ddim_steps", required=False, type=int, default=25)
+
     args = ap.parse_args()
 
-    if args.epoch == -1:
-        ckpt, ema_ckpt = latest_checkpoint(Path("./out") / args.name / "checkpoints")
+    if args.checkpoint is None:
+        experiment_path = Path("./out") / args.name
+        ckpts_path = experiment_path / "checkpoints"
+        schedule_path = experiment_path / "schedule_kwargs.pt"
+
+        if args.epoch == -1:
+            ckpt, ema_ckpt, _opt_ckpt = latest_checkpoint(ckpts_path)
+        else:
+            ckpt, ema_ckpt, _opt_ckpt = epoch_checkpoint(ckpts_path, args.epoch)
+
+        print(f"Loading schedule: {schedule_path}")
+        sched_kwargs = load_schedule_kwargs(schedule_path)
+        sched = Schedule(**sched_kwargs)
+        ddim_sched = ScheduleDDIM(args.ddim_steps, sched, **sched_kwargs)
     else:
-        ckpt, ema_ckpt = epoch_checkpoint(Path("./out") / args.name / "checkpoints", args.epoch)
+        lut = {
+            "2": (load_model_v2, load_ema_v2, get_sched_kwargs_v2),
+            "3": (load_model, load_ema)
+        }
+        ckpt, version = args.checkpoint.split(",")
+
+        if version not in lut:
+            assert RuntimeError(f"Unsupported version {version}")
+
+        load_model, load_ema, get_sched_kwargs = lut[version]
+
+        if args.ema and not load_ema:
+            assert RuntimeError(f"Lazy or impossible to implement ema sampling on version {version}")
+
+        sched_kwargs = get_sched_kwargs()
+        sched = Schedule(**sched_kwargs)
+        ddim_sched = ScheduleDDIM(args.ddim_steps, sched, **sched_kwargs)
 
     if args.ema:
-        print(f"Loading: {ema_ckpt}")
-        model = load_ema(ema_ckpt, "eval")
-    else:
-        print(f"Loading: {ckpt}")
-        model, _ = load(ckpt, "eval")
+        load_model = load_ema
+
+    print(f"Loading model: {ckpt}")
+    model = load_model(ckpt, "eval")
 
     device = (
         torch.accelerator.current_accelerator() if torch.accelerator.is_available() else torch.device("cpu")
     )
-
     model.to(device)
 
     print(f"Sampling")
-    do(model, args.out)
+    do(model, args.out, ddim_sched if args.ddim else sched)
