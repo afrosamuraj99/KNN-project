@@ -359,14 +359,16 @@ def load_ema(path, mode):
             init_dim=checkpoint["init_dim"],
             dim_mults=checkpoint["dim_mults"],
         )
-    model.load_state_dict(checkpoint["model_state_dict"], assign=True)
+        ema_model = torch.optim.swa_utils.AveragedModel(
+            model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"])
+        )
 
-    ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"]))
+    ema_model.load_state_dict(checkpoint["model_state_dict"], assign=True)
 
     if mode == "eval":
-        model.eval()
+        ema_model.eval()
     elif mode == "train":
-        model.train()
+        ema_model.train()
     else:
         RuntimeError("Supported modes are 'eval' or 'train'")
 
