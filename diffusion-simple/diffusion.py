@@ -201,14 +201,14 @@ if __name__ == "__main__":
 
     channels = 3
     init_dim = 128
-    dim_mults = (1, 2, 3, 4,)
+    dim_mults = (1, 2, 2, 2,)
 
     ema_decay = 0.9999
     learning_rate = 1e-4
-    epochs = 10
+    epochs = 50
     batch_size = 256
-    microbatch_size = 25
-    save_and_sample_every = 50  # nth batch
+    microbatch_size = 256
+    save_and_sample_every = 250  # nth batch
     log_interval = 50
 
     timesteps = 1000
@@ -275,7 +275,11 @@ if __name__ == "__main__":
 
             batch_size = batch["img"].shape[0]
 
-            for i in tqdm(range(0, batch_size, microbatch_size), unit="ubatch", unit_scale=True, total=nr_micro_batches, leave=False):
+            mb_iter = range(0, batch_size, microbatch_size)
+            if microbatch_size != batch_size:
+                mb_iter = tqdm(mb_iter, unit="ubatch", unit_scale=True, total=nr_micro_batches, leave=False)
+
+            for i in mb_iter:
                 microbatch = batch["img"][i : i + microbatch_size].to(device)
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 
@@ -285,7 +289,6 @@ if __name__ == "__main__":
 
                 loss.backward()
 
-            if step % 100 == 0:
             if step % log_interval == 0:
                 tqdm.write(f"Loss: {loss_item}")
 
