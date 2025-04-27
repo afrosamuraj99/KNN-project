@@ -264,7 +264,7 @@ def find_resume_checkpoint():
         if num > latest:
             latest = num
             latest_path = model_path
-    return str(latest_path)
+    return str(latest_path) if latest_path else None
 
 
 def find_ema_checkpoint(main_checkpoint, step, rate):
