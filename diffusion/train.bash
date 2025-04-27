@@ -6,6 +6,11 @@ MODEL_FLAGS="--image_size 128 --learn_sigma True --use_scale_shift_norm True --r
 DIFFUSION_FLAGS="--diffusion_steps 1000 --noise_schedule linear"
 TRAIN_FLAGS="--batch_size 256 --microbatch 20 --save_interval 50 --log_interval 10 --lr 1e-4"
 
-export OPENAI_LOGDIR="./logs-train"
+if [[ -z "$1" ]]; then
+  echo "Provide experiment name as the first argument"
+  exit 1
+fi
+
+export OPENAI_LOGDIR="./logs-train-$1"
 
 python scripts/image_train.py --data_dir ../../datasets/coco/train_imgs/resized_128 $MODEL_FLAGS $DIFFUSION_FLAGS $TRAIN_FLAGS

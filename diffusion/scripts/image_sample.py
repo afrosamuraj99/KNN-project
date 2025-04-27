@@ -5,9 +5,11 @@ numpy array. This can be used to produce samples for FID evaluation.
 
 import argparse
 import os
+from pathlib import Path
 
 import numpy as np
 import torch as th
+from PIL import Image
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
@@ -22,15 +24,21 @@ from guided_diffusion.script_util import (
 def main():
     args = create_argparser().parse_args()
 
+    model_path = Path(args.model_path)
+    name = model_path.parent.name.removeprefix("logs-train-")
+    os.environ["OPENAI_LOGDIR"] = f"./logs-sample-{name}"
+
     dist_util.setup_dist()
     logger.configure()
+
+    log_dir_path = Path(logger.get_dir())
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.load_state_dict(
-        dist_util.load_state_dict(args.model_path, map_location="cpu")
+        dist_util.load_state_dict(str(model_path), map_location="cpu")
     )
     model.to(dist_util.dev())
     if args.use_fp16:
@@ -73,12 +81,21 @@ def main():
         label_arr = np.concatenate(all_labels, axis=0)
         label_arr = label_arr[: args.num_samples]
     shape_str = "x".join([str(x) for x in arr.shape])
-    out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
+    out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}_{model_path.name}.npz")
     logger.log(f"saving to {out_path}")
     if args.class_cond:
         np.savez(out_path, arr, label_arr)
     else:
         np.savez(out_path, arr)
+
+    out_path = log_dir_path / model_path.name
+    out_path.mkdir(exist_ok=True, parents=True)
+    for f_path in out_path.iterdir():
+        f_path.unlink()
+
+    for i in range(arr.shape[0]):
+        img = Image.fromarray(arr[i], "RGB")
+        img.save(out_path / f"{i}.png")
 
     logger.log("sampling complete")
 

@@ -1,6 +1,6 @@
 classify_image_graph_def.pb
 /datasets
 /*.egg-info
-/logs-train
-/logs-sample
+/logs-train*
+/logs-sample*
 /openai-models
