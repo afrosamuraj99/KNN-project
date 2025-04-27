@@ -54,8 +54,8 @@ def get_sched_kwargs_v2():
     sched_kwargs = {"betas": linear_beta_schedule(timesteps=1000)}
     return sched_kwargs
 
-def do(model, out, sched):
-    batches = num_to_groups(16, 16)
+def do(model, out, num_samples, batch_size, sched):
+    batches = num_to_groups(num_samples, batch_size)
     all_images_list = list(map(lambda n: sample(model, sched=sched, image_size=128, batch_size=n, channels=3), batches))
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
@@ -79,6 +79,8 @@ if __name__ == "__main__":
     ap.add_argument("--ema", action="store_true")
     ap.add_argument("--epoch", required=False, type=int, default=-1)
     ap.add_argument("--ddim_steps", required=False, type=int, default=25)
+    ap.add_argument("--num_samples", required=False, type=int, default=16)
+    ap.add_argument("--batch_size", required=False, type=int, default=16)
 
     args = ap.parse_args()
 
@@ -127,4 +129,4 @@ if __name__ == "__main__":
     model.to(device)
 
     print(f"Sampling")
-    do(model, args.out, ddim_sched if args.ddim else sched)
+    do(model, args.out, args.num_samples, args.batch_size, ddim_sched if args.ddim else sched)
