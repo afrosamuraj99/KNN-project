@@ -193,7 +193,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", help="experiment name", required=True)
     ap.add_argument("--dataset", help="path to the dataset directory", required=True)
-    ap.add_argument("--resolution", help="dataset resolution", type=int, default=128)
+    ap.add_argument("--resolution", help="dataset resolution", required=True, type=int)
     args = ap.parse_args()
 
     name = args.name
@@ -209,6 +209,7 @@ if __name__ == "__main__":
     batch_size = 256
     microbatch_size = 25
     save_and_sample_every = 50  # nth batch
+    log_interval = 50
 
     timesteps = 1000
     ddim_timesteps = 25
@@ -285,6 +286,7 @@ if __name__ == "__main__":
                 loss.backward()
 
             if step % 100 == 0:
+            if step % log_interval == 0:
                 tqdm.write(f"Loss: {loss_item}")
 
             optimizer.step()
