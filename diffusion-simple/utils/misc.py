@@ -76,8 +76,8 @@ def epoch_checkpoint(checkpoints_folder, epoch):
             elif parts[2] == "optimizer":
                 opt_checkpoint_path = chkpt_path
 
-        if checkpoint_path is not None and ema_checkpoint_path is not None:
+        if checkpoint_path is not None and ema_checkpoint_path is not None and opt_checkpoint_path is not None:
             break
 
-    assert checkpoint_path is not None and ema_checkpoint_path is not None and opt_chechkpoint_path is not None
+    assert checkpoint_path is not None and ema_checkpoint_path is not None and opt_checkpoint_path is not None
     return checkpoint_path, ema_checkpoint_path, opt_chechkpoint_path
