@@ -193,15 +193,18 @@ class Unet(nn.Module):
         channels=3,
         self_condition=False,
         resnet_block_groups=4,
+        grayscale_channels=1,  
     ):
         super().__init__()
 
         # determine dimensions
         self.channels = channels
         self.self_condition = self_condition
-        input_channels = channels * (2 if self_condition else 1)
+        self.grayscale_channels = grayscale_channels  
+        
+        input_channels = channels * (2 if self_condition else 1) + grayscale_channels
 
-        self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0) # changed to 1 and 0 from 7,3
+        self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0)
 
         dims = [init_dim, *map(lambda m: init_dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -265,10 +268,13 @@ class Unet(nn.Module):
         self.final_res_block = block_klass(init_dim * 2, init_dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
-    def forward(self, x, time, x_self_cond=None):
+    def forward(self, x, time, grayscale=None, x_self_cond=None):
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim=1)
+        
+        if grayscale is not None:
+            x = torch.cat((x, grayscale), dim=1)
 
         x = self.init_conv(x)
         r = x.clone()
@@ -308,6 +314,9 @@ class Unet(nn.Module):
 
 
 def save_model(model, unet_kwargs, path):
+    if hasattr(model, 'grayscale_channels') and 'grayscale_channels' not in unet_kwargs:
+        unet_kwargs['grayscale_channels'] = model.grayscale_channels
+    
     torch.save({
         "model_state_dict": model.state_dict(),
         "unet_kwargs": unet_kwargs,

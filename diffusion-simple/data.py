@@ -18,11 +18,15 @@ class DataTransform:
 
     def transform_one(self, data):
         img = Image.open(data["img_path"]).convert("RGB")
-        img_tensor = F.pil_to_tensor(img)
+
         if self.transform is not None:
-            data["img"] = self.transform(img_tensor)
+            data["img"] = self.transform(img)
+            # Create grayscale version (average across RGB channels)
+            data["grayscale"] = data["img"].mean(dim=0, keepdim=True)  # Simple grayscale conversion
         else:
-            data["img"] = img_tensor
+            data["img"] = F.pil_to_tensor(img)
+            data["grayscale"] = data["img"].mean(dim=0, keepdim=True)
+        
         return data
 
 

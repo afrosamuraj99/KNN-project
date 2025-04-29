@@ -5,6 +5,8 @@ from collections import deque
 import pickle
 import os
 
+from torchvision import transforms as T
+
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -42,12 +44,12 @@ def get_noisy_image(x_start, t, sched):
 
   return noisy_image
 
-def p_losses(denoise_model, x_start, t, sched, noise=None, loss_type="l2"):
+def p_losses(denoise_model, x_start, t, sched, grayscale=None, noise=None, loss_type="l2"):
     if noise is None:
         noise = torch.randn_like(x_start)
 
     x_noisy = q_sample(x_start=x_start, t=t, sched=sched, noise=noise)
-    predicted_noise = denoise_model(x_noisy, t)
+    predicted_noise = denoise_model(x_noisy, t, grayscale=grayscale)
 
     if loss_type == "l1":
         loss = F.l1_loss(noise, predicted_noise)
@@ -81,10 +83,10 @@ def q_posterior(x_start, x_t, t, sched):
     return posterior_mean, posterior_variance_t
 
 @torch.no_grad()
-def p_sample(model, x, t, t_index, sched):
+def p_sample(model, x, t, t_index, sched, grayscale=None):
     # Equation 11 by using reconstructed x_0 in eq. 7.
     # Basically eq. 11 unsimplified, in order to clip intermediate x_0 into proper range.
-    predicted_noise = model(x, t)
+    predicted_noise = model(x, t, grayscale=grayscale)
     x_recon = predict_start_from_noise(x, t, predicted_noise, sched)
     x_recon = torch.clamp(x_recon, min=-1., max=1.)
     model_mean, posterior_variance_t = q_posterior(x_start=x_recon, x_t=x, t=t, sched=sched)
@@ -98,7 +100,7 @@ def p_sample(model, x, t, t_index, sched):
 
 # Algorithm 2
 @torch.no_grad()
-def p_sample_loop(model, shape, sched):
+def p_sample_loop(model, shape, sched, grayscale=None):
     device = next(model.parameters()).device
 
     b = shape[0]
@@ -106,7 +108,7 @@ def p_sample_loop(model, shape, sched):
     imgs = torch.randn(shape, device=device)
 
     for i in tqdm(reversed(range(0, sched.timesteps)), desc="Sampling loop time step", total=sched.timesteps, unit="step", leave=False):
-        imgs = p_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched)
+        imgs = p_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale)
     return imgs
 
 @torch.no_grad()
@@ -147,31 +149,60 @@ def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=Fa
         return model_mean + sigma * noise
 
 @torch.no_grad()
-def ddim_sample_loop(model, shape, sched):
+def ddim_sample_loop(model, shape, sched, grayscale=None):
     device = next(model.parameters()).device
 
     b = shape[0]
-    # start from pure noise (for each example in the batch)
     imgs = torch.randn(shape, device=device)
 
     for i in tqdm(reversed(range(0, sched.timesteps)), desc="Sampling loop time step", total=sched.timesteps, unit="step", leave=False):
-        imgs = ddim_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched)
+        imgs = ddim_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale)
     return imgs
 
 @torch.no_grad()
-def sample(model, image_size, batch_size=16, channels=3, *, sched):
+def sample(model, image_size, batch_size=16, channels=3, *, sched, grayscale=None):
     if isinstance(sched, ScheduleDDIM):
-        return ddim_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched)
+        return ddim_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale)
     else:
-        return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched)
+        return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale)
 
-def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, channels, sched):
+def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, channels, sched, grayscale=None):
     results_folder = folder / "results"
     results_folder.mkdir(exist_ok=True, parents=True)
     batches = num_to_groups(16, microbatch_size)
-    all_images_list = list(map(lambda n: sample(model, sched=sched, image_size=image_size, batch_size=n, channels=channels), batches))
+    
+    # If grayscale is None, create a random grayscale image for visualization
+    if grayscale is None:
+        # Create a random grayscale image (1 channel)
+        sample_grayscale = torch.rand((1, 1, image_size, image_size), device=next(model.parameters()).device) * 2 - 1
+        # Repeat for all samples
+        grayscale = sample_grayscale.repeat(microbatch_size, 1, 1, 1)
+    
+    all_images_list = list(map(
+        lambda n: sample(
+            model, 
+            sched=sched, 
+            image_size=image_size, 
+            batch_size=n, 
+            channels=channels,
+            grayscale=grayscale[:n] if grayscale is not None else None
+        ), 
+        batches
+    ))
+    
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
+    
+    # Save both the grayscale input and colorized output side by side
+    if grayscale is not None:
+        grayscale_display = grayscale[:16].repeat(1, 3, 1, 1)  # Convert single channel to 3 channels for display
+        grayscale_display = (grayscale_display + 1) / 2  # Convert from [-1,1] to [0,1]
+        
+        # Create a grid with grayscale on left, colorized on right
+        comparison = torch.cat([grayscale_display, all_images[:16]], dim=0)
+        torchvision.utils.save_image(comparison, results_folder / f"comparison-{epoch}-{milestone}.png", nrow=8)
+    
+    # Save the colorized outputs
     torchvision.utils.save_image(all_images, results_folder / f"sample-{epoch}-{milestone}.png", nrow=8)
 
 def save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, folder):
@@ -205,7 +236,7 @@ if __name__ == "__main__":
 
     ema_decay = 0.9999
     learning_rate = 1e-4
-    epochs = 50
+    epochs = 500
     batch_size = 256
     microbatch_size = 256
     save_and_sample_every = 250  # nth batch
@@ -215,9 +246,20 @@ if __name__ == "__main__":
     ddim_timesteps = 25
     betas_f = linear_beta_schedule
 
-    train_dset_path = Path(args.dataset) / "train_imgs" / f"resized_{image_size}"
-    val_dset_path = Path(args.dataset) / "val_imgs" / f"resized_{image_size}"
+    # train_dset_path = Path(args.dataset) / "train_imgs" / f"resized_{image_size}"
+    # val_dset_path = Path(args.dataset) / "val_imgs" / f"resized_{image_size}"
+    train_dset_path = Path(args.dataset) / "cifar_train"
+    val_dset_path = Path(args.dataset) / "cifar_test"
+
     out_path = Path("./out") / name
+
+    transform = T.Compose([
+        T.Resize(image_size),
+        T.CenterCrop(image_size),
+        T.Grayscale(num_output_channels=3),
+        T.ToTensor(),
+        T.Lambda(lambda x: x * 2 - 1),
+    ])
 
     train_dataloader = setup_loader(
         data_dir=str(train_dset_path),
@@ -285,17 +327,18 @@ if __name__ == "__main__":
                 mb_iter = tqdm(mb_iter, unit="ubatch", unit_scale=True, total=nr_micro_batches, leave=False)
 
             for i in mb_iter:
+                # Get both the color image and grayscale conditioning
                 microbatch = batch["img"][i : i + microbatch_size].to(device)
+                grayscale = batch["grayscale"][i : i + microbatch_size].to(device)
+                
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 
-                loss = p_losses(model, microbatch, t, schedule, loss_type="l2")
+                # Pass grayscale to p_losses
+                loss = p_losses(model, microbatch, t, schedule, grayscale=grayscale, loss_type="l2")
                 loss_item = loss.item()
                 loss_history.append(loss_item)
 
                 loss.backward()
-
-            if step % log_interval == 0:
-                tqdm.write(f"Loss: {loss_item}")
 
             optimizer.step()
             ema_model.update_parameters(model)
