@@ -62,32 +62,38 @@ def do(model, out, num_samples, batch_size, sched, grayscale_path=None):
     batches = num_to_groups(num_samples, batch_size)
     device = next(model.parameters()).device
     
-
     grayscale_cond = None
     if grayscale_path:
-
         dataset = list(Path(grayscale_path).glob("*.png")) + list(Path(grayscale_path).glob("*.jpg"))
         if len(dataset) == 0:
             raise ValueError("Dataset path does not contain any valid images.")
         
-        random_img_path = random.choice(dataset)
-        color_img = Image.open(random_img_path).convert("RGB") 
-        color_img = color_img.resize((32, 32)) 
-        grayscale_tensor = F.to_tensor(color_img).mean(dim=0, keepdim=True)  
-        grayscale_tensor = (grayscale_tensor * 2) - 1 
-
-        grayscale_cond = grayscale_tensor.repeat(batch_size, 1, 1, 1)
-        grayscale_cond = grayscale_cond.to(device)
-
-
-        grayscale_out = out.replace('.png', '_grayscale_input.png')
-        grayscale_display = grayscale_tensor.repeat(1, 3, 1, 1) 
-        grayscale_display = (grayscale_display + 1) / 2  
-        torchvision.utils.save_image(grayscale_display, grayscale_out)
-
+        # Select 16 unique random images
+        selected_images = random.sample(dataset, min(len(dataset), num_samples))
+        
+        # Process all selected images
+        grayscale_tensors = []
+        color_images = []
+        for img_path in selected_images:
+            color_img = Image.open(img_path).convert("RGB")
+            color_img = color_img.resize((32, 32))
+            color_tensor = F.to_tensor(color_img)
+            color_images.append(color_tensor)
+            
+            grayscale_tensor = color_tensor.mean(dim=0, keepdim=True)
+            grayscale_tensor = (grayscale_tensor * 2) - 1
+            grayscale_tensors.append(grayscale_tensor)
+        
+        grayscale_cond = torch.stack(grayscale_tensors).to(device)
+        color_display = torch.stack(color_images).to(device)  # Přesun na stejné zařízení jako model
+        
+        # Save original color images (top half)
+        color_display_save = (color_display * 2) - 1 
+        torchvision.utils.save_image(color_display_save, out, nrow=8)
     else:
         grayscale_cond = torch.rand((batch_size, 1, 32, 32), device=device) * 2 - 1
     
+    # Generate colorized versions (bottom half)
     all_images_list = list(map(
         lambda n: sample(
             model, 
@@ -102,7 +108,16 @@ def do(model, out, num_samples, batch_size, sched, grayscale_path=None):
     
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
-    torchvision.utils.save_image(all_images, out, nrow=8)
+    
+    # Combine original and colorized images
+    if grayscale_path:
+        combined_images = torch.cat([
+            color_display,  # Original color images (top)
+            all_images      # Colorized images (bottom)
+        ])
+        torchvision.utils.save_image(combined_images, out, nrow=8)
+    else:
+        torchvision.utils.save_image(all_images, out, nrow=8)
 
 
 if __name__ == "__main__":

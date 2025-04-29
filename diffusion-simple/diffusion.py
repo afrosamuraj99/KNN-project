@@ -112,10 +112,10 @@ def p_sample_loop(model, shape, sched, grayscale=None):
     return imgs
 
 @torch.no_grad()
-def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=False):
+def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=False, grayscale=None):
     # DDPM Equation 11 by using reconstructed x_0 in eq. 7.
     # Basically eq. 11 unsimplified, in order to clip intermediate x_0 into proper range.
-    eps = predicted_noise = model(x, sched.transform_times(t))
+    eps = predicted_noise = model(x, sched.transform_times(t), grayscale=grayscale)
     x_recon = predict_start_from_noise(x, t, predicted_noise, sched)
     x_recon = torch.clamp(x_recon, min=-1., max=1.)
     model_mean, _posterior_variance_t = q_posterior(x_start=x_recon, x_t=x, t=t, sched=sched)
@@ -256,7 +256,6 @@ if __name__ == "__main__":
     transform = T.Compose([
         T.Resize(image_size),
         T.CenterCrop(image_size),
-        T.Grayscale(num_output_channels=3),
         T.ToTensor(),
         T.Lambda(lambda x: x * 2 - 1),
     ])
