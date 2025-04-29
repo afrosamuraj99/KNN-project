@@ -124,7 +124,7 @@ if __name__ == "__main__":
     ap.add_argument("--ddim_steps", required=False, type=int, default=25)
     ap.add_argument("--num_samples", required=False, type=int, default=16)
     ap.add_argument("--batch_size", required=False, type=int, default=16)
-    ap.add_argument("--grayscale", required=False, help="Path to grayscale image for conditioning")
+    ap.add_argument("--grayscale", required=False, help="Path to grayscale image for conditioning", default="../diffusion/datasets/cifar_test")
 
 
     args = ap.parse_args()
