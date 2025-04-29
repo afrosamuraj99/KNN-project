@@ -345,10 +345,10 @@ if __name__ == "__main__":
 
             if step != 0 and step % save_and_sample_every == 0:
                 milestone = step // save_and_sample_every
-                track_samples(out_path, epoch, milestone, model, microbatch_size, image_size, channels, sched=schedule)
+                track_samples(out_path, epoch, milestone, model, microbatch_size, image_size, channels, sched=schedule, grayscale=grayscale)
 
             step += 1
 
         history[epoch] = loss_history
         save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
-        track_samples(out_path, epoch, "last", model, microbatch_size, image_size, channels, sched=schedule)
+        track_samples(out_path, epoch, "last", model, microbatch_size, image_size, channels, sched=schedule, grayscale=grayscale)

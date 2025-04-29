@@ -173,7 +173,7 @@ if __name__ == "__main__":
     )
     model.to(device)
 
-   print(f"Sampling")
+    print(f"Sampling")
     do(model, args.out, args.num_samples, args.batch_size, 
-       ddim_sched if args.ddim else sched,
-       grayscale_path=args.grayscale)
+        ddim_sched if args.ddim else sched,
+        grayscale_path=args.grayscale)
