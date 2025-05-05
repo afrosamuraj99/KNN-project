@@ -27,9 +27,12 @@ def Upsample(dim, dim_out=None):
 
 def Downsample(dim, dim_out=None):
     # No More Strided Convolutions or Pooling
+    # return nn.Sequential(
+    #     Rearrange("b c (h p1) (w p2) -> b (c p1 p2) h w", p1=2, p2=2),
+    #     nn.Conv2d(dim * 4, default(dim_out, dim), 1),
+    # )
     return nn.Sequential(
-        Rearrange("b c (h p1) (w p2) -> b (c p1 p2) h w", p1=2, p2=2),
-        nn.Conv2d(dim * 4, default(dim_out, dim), 1),
+            nn.Conv2d(dim, default(dim_out, dim), 1, stride=2),
     )
 
 
@@ -193,15 +196,15 @@ class Unet(nn.Module):
         channels=3,
         self_condition=False,
         resnet_block_groups=4,
-        grayscale_channels=1,  
+        grayscale_channels=1,
     ):
         super().__init__()
 
         # determine dimensions
         self.channels = channels
         self.self_condition = self_condition
-        self.grayscale_channels = grayscale_channels  
-        
+        self.grayscale_channels = grayscale_channels
+
         input_channels = channels * (2 if self_condition else 1) + grayscale_channels
 
         self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0)
@@ -234,7 +237,7 @@ class Unet(nn.Module):
                     [
                         block_klass(dim_in, dim_in, time_emb_dim=time_dim),
                         block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                        Residual(PreNorm(dim_in, LinearAttention(dim_in))),
+                        # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
                         Downsample(dim_in, dim_out)
                         if not is_last
                         else nn.Conv2d(dim_in, dim_out, 3, padding=1),
@@ -255,7 +258,7 @@ class Unet(nn.Module):
                     [
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        Residual(PreNorm(dim_out, LinearAttention(dim_out))),
+                        # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         Upsample(dim_out, dim_in)
                         if not is_last
                         else nn.Conv2d(dim_out, dim_in, 3, padding=1),
@@ -272,7 +275,7 @@ class Unet(nn.Module):
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim=1)
-        
+
         if grayscale is not None:
             x = torch.cat((x, grayscale), dim=1)
 
@@ -283,12 +286,13 @@ class Unet(nn.Module):
 
         h = []
 
-        for block1, block2, attn, downsample in self.downs:
+        # for block1, block2, attn, downsample in self.downs:
+        for block1, block2, downsample in self.downs:
             x = block1(x, t)
             h.append(x)
 
             x = block2(x, t)
-            x = attn(x)
+            # x = attn(x)
             h.append(x)
 
             x = downsample(x)
@@ -297,13 +301,14 @@ class Unet(nn.Module):
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
-        for block1, block2, attn, upsample in self.ups:
+        # for block1, block2, attn, upsample in self.ups:
+        for block1, block2, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
 
             x = torch.cat((x, h.pop()), dim=1)
             x = block2(x, t)
-            x = attn(x)
+            # x = attn(x)
 
             x = upsample(x)
 
@@ -316,7 +321,7 @@ class Unet(nn.Module):
 def save_model(model, unet_kwargs, path):
     if hasattr(model, 'grayscale_channels') and 'grayscale_channels' not in unet_kwargs:
         unet_kwargs['grayscale_channels'] = model.grayscale_channels
-    
+
     torch.save({
         "model_state_dict": model.state_dict(),
         "unet_kwargs": unet_kwargs,
