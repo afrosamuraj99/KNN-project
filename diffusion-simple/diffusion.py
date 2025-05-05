@@ -169,7 +169,7 @@ def sample(model, image_size, batch_size=16, channels=3, *, sched, grayscale=Non
 def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, channels, sched, grayscale=None):
     results_folder = folder / "results"
     results_folder.mkdir(exist_ok=True, parents=True)
-    batches = num_to_groups(16, microbatch_size)
+    batches = num_to_groups(1, microbatch_size)
     
     # If grayscale is None, create a random grayscale image for visualization
     if grayscale is None:
@@ -195,15 +195,15 @@ def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, 
     
     # Save both the grayscale input and colorized output side by side
     if grayscale is not None:
-        grayscale_display = grayscale[:16].repeat(1, 3, 1, 1)  # Convert single channel to 3 channels for display
+        grayscale_display = grayscale[:1].repeat(1, 3, 1, 1)  # Convert single channel to 3 channels for display
         grayscale_display = (grayscale_display + 1) / 2  # Convert from [-1,1] to [0,1]
         
         # Create a grid with grayscale on left, colorized on right
-        comparison = torch.cat([grayscale_display, all_images[:16]], dim=0)
-        torchvision.utils.save_image(comparison, results_folder / f"comparison-{epoch}-{milestone}.png", nrow=8)
+        comparison = torch.cat([grayscale_display, all_images[:1]], dim=0)
+        torchvision.utils.save_image(comparison, results_folder / f"comparison-{epoch}-{milestone}.png", nrow=1)
     
     # Save the colorized outputs
-    torchvision.utils.save_image(all_images, results_folder / f"sample-{epoch}-{milestone}.png", nrow=8)
+    torchvision.utils.save_image(all_images, results_folder / f"sample-{epoch}-{milestone}.png", nrow=1)
 
 def save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, folder):
     ckpts = folder / "checkpoints"
@@ -238,18 +238,21 @@ if __name__ == "__main__":
     learning_rate = 1e-4
     epochs = 500
     batch_size = 256
-    microbatch_size = 256
+    microbatch_size = 8
     save_and_sample_every = 250  # nth batch
     log_interval = 50
 
-    timesteps = 1000
+    timesteps = 500
     ddim_timesteps = 25
     betas_f = linear_beta_schedule
 
     # train_dset_path = Path(args.dataset) / "train_imgs" / f"resized_{image_size}"
     # val_dset_path = Path(args.dataset) / "val_imgs" / f"resized_{image_size}"
-    train_dset_path = Path(args.dataset) / "cifar_train"
-    val_dset_path = Path(args.dataset) / "cifar_test"
+    # train_dset_path = Path(args.dataset) / "cifar_train"
+    # val_dset_path = Path(args.dataset) / "cifar_test"
+
+    train_dset_path = Path(args.dataset) / "train_imgs"
+    val_dset_path = Path(args.dataset) / "val_imgs"
 
     out_path = Path("./out") / name
 
@@ -350,4 +353,5 @@ if __name__ == "__main__":
 
         history[epoch] = loss_history
         save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
+#        f epoch % 5 == 0:
         track_samples(out_path, epoch, "last", model, microbatch_size, image_size, channels, sched=schedule, grayscale=grayscale)
