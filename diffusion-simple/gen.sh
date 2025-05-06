@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 python sample.py \
-  --name cifar-grayscale \
+  --name cifar-grayscale-5 \
   --ddpm \
   --out samples_gray_cond.png \
   --num_samples 16 \
