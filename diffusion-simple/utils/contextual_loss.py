@@ -143,8 +143,8 @@ def test():
         #     [[2,3,4,5,6], [2,3,4,5,6], [2,3,4,5,6]], # row 2
         # ],
     ], dtype=torch.float32)
-    noise = torch.tensor(np.random.normal(loc=0, scale=25, size=x.shape), dtype=torch.float32)
-    x = x + noise
+    # noise = torch.tensor(np.random.normal(loc=0, scale=25, size=x.shape), dtype=torch.float32)
+    # x = x + noise
     y = x.detach().clone()  # Should lead to CX = 1 for each (x_i, y_i) pair
     # y = torch.cat([x[None, 1], x[None, 0]]) # Should lead to CX != 1 for each (x_i, y_i) pair
     # y = x[None, 1]
@@ -182,6 +182,16 @@ def test():
     CS_fw = torch.mean(k_max_NC, dim=1)
     CX_loss_fw = -torch.log(CS_fw)
     print(CS_fw)
+
+    x_NCHW = rearrange(x, "n h w c -> n c h w")
+    y_NCHW = rearrange(y, "n h w c -> n c h w")
+    cs_api = get_feature_similarities(x_NCHW, y_NCHW)
+    print("CD")
+    print(cs)
+    print("\nCD API")
+    print(cs_api)
+    assert (cs == cs_api).all()
+    print("API matches test")
 
 
 if __name__ == "__main__":
