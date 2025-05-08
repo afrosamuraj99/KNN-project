@@ -335,14 +335,14 @@ def save_optimizer(optimizer, path):
     }, path)
 
 def load_model(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
     with torch.device("meta"):
         model = Unet(**checkpoint["unet_kwargs"])
     model.load_state_dict(checkpoint["model_state_dict"], assign=True)
     return model
 
 def load_ema(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
 
     with torch.device("meta"):
         model = Unet(**checkpoint["unet_kwargs"])
@@ -362,7 +362,7 @@ def load_ema(path, mode):
     return ema_model
 
 def load_optimizer(path, model):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
-    optimizer = torch.optim.Adam(model.parameters())
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
+    optimizer = torch.optim.AdamW(model.parameters())
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     return optimizer
