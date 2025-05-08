@@ -58,10 +58,10 @@ def latest_checkpoint(checkpoints_folder):
 def epoch_checkpoint(checkpoints_folder, epoch):
     checkpoint_path = None
     ema_checkpoint_path = None
-    opt_chechkpoint_path = None
+    opt_checkpoint_path = None
 
     if not checkpoints_folder.exists():
-        return checkpoint_path, ema_checkpoint_path, opt_chechkpoint_path
+        return checkpoint_path, ema_checkpoint_path, opt_checkpoint_path
 
     for chkpt_path in checkpoints_folder.iterdir():
         parts = chkpt_path.stem.split("-", 2)
@@ -80,4 +80,4 @@ def epoch_checkpoint(checkpoints_folder, epoch):
             break
 
     assert checkpoint_path is not None and ema_checkpoint_path is not None and opt_checkpoint_path is not None
-    return checkpoint_path, ema_checkpoint_path, opt_chechkpoint_path
+    return checkpoint_path, ema_checkpoint_path, opt_checkpoint_path
