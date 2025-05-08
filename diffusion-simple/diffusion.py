@@ -258,7 +258,6 @@ if __name__ == "__main__":
 
     transform = T.Compose([
         T.Resize(image_size),
-        T.CenterCrop(image_size),
         T.ToTensor(),
         T.Lambda(lambda x: x * 2 - 1),
     ])

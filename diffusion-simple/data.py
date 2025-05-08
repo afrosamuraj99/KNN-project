@@ -3,11 +3,12 @@ from typing import Any, Iterator
 
 from torch.utils.data import Dataset as TorchDataset, DataLoader as TorchDataLoader, default_collate
 import torchvision.transforms.functional as F
+from torchvision import transforms as T
 from PIL import Image
 
 
 class DataTransform:
-    def __init__(self, transform=None):
+    def __init__(self, transform):
         self.transform = transform
 
     def __call__(self, data):
@@ -18,28 +19,32 @@ class DataTransform:
 
     def transform_one(self, data):
         img = Image.open(data["img_path"]).convert("RGB")
+        ref = Image.open(data["ref_path"]).convert("RGB")
 
-        if self.transform is not None:
-            data["img"] = self.transform(img)
-            # Create grayscale version (average across RGB channels)
-            data["grayscale"] = data["img"].mean(dim=0, keepdim=True)  # Simple grayscale conversion
-        else:
-            data["img"] = F.pil_to_tensor(img)
-            data["grayscale"] = data["img"].mean(dim=0, keepdim=True)
-        
+        data["img"] = self.transform(img)
+        data["ref"] = self.transform(ref)
+        data["grayscale"] = data["img"].mean(dim=0, keepdim=True)
+
         return data
 
 
 class DatasetLister:
     def __init__(self, path: str):
         self.path = Path(path)
+        self.references_path = self.path.parent / (self.path.name + "_references")
+
         self.img_paths = []
+        self.ref_paths = []
 
         for img_path in self.path.iterdir():
             self.img_paths.append(str(img_path))
+            self.ref_paths.append(str(self.references_path / img_path.name))
 
     def __getitem__(self, i: int) -> dict:
-        data = {"img_path": self.img_paths[i]}
+        data = {
+            "img_path": self.img_paths[i],
+            "ref_path": self.ref_paths[i],
+        }
         return data
 
     def __len__(self):
@@ -47,11 +52,14 @@ class DatasetLister:
 
     def __iter__(self) -> Iterator[dict]:
         for i in range(len(self.labels)):
-            yield {"img_path": self.img_paths[i]}
+            yield {
+                "img_path": self.img_paths[i],
+                "ref_path": self.ref_paths[i],
+            }
 
 
 class Dataset(TorchDataset):
-    def __init__(self, path: str, transform=None):
+    def __init__(self, path: str, transform):
         self.data = DatasetLister(path)
         self.tx = DataTransform(transform)
 
@@ -62,7 +70,7 @@ class Dataset(TorchDataset):
         return self.tx(self.data[i])
 
 
-def setup_loader(*, data_dir, batch_size, shuffle, transform=None):
+def setup_loader(*, data_dir, batch_size, shuffle, transform):
     dataset = Dataset(data_dir, transform)
     loader = TorchDataLoader(
         dataset,
