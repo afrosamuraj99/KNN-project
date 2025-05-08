@@ -199,22 +199,18 @@ class Unet(nn.Module):
         grayscale_channels=1,
     ):
         super().__init__()
-
-        # determine dimensions
+        
         self.channels = channels
         self.self_condition = self_condition
         self.grayscale_channels = grayscale_channels
 
         input_channels = channels * (2 if self_condition else 1) + grayscale_channels
-
         self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0)
 
         dims = [init_dim, *map(lambda m: init_dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
         block_klass = partial(ResnetBlock, groups=resnet_block_groups)
-
-        # time embeddings
         time_dim = init_dim * 4
 
         self.time_mlp = nn.Sequential(
@@ -224,24 +220,43 @@ class Unet(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        # layers
+        # pocet kanalu CLIPu
+        self.clip_channels = [256, 256, 512, 1024]  
+        
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
-        num_resolutions = len(in_out)
+        self.down_feature_convs = nn.ModuleList([])
+        self.up_feature_convs = nn.ModuleList([])
 
+        num_resolutions = len(in_out)
+        
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
 
             self.downs.append(
-                nn.ModuleList(
-                    [
-                        block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                        block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                        # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
-                        Downsample(dim_in, dim_out)
-                        if not is_last
-                        else nn.Conv2d(dim_in, dim_out, 3, padding=1),
-                    ]
+                nn.ModuleList([
+                    block_klass(dim_in, dim_in, time_emb_dim=time_dim),
+                    block_klass(dim_in, dim_in, time_emb_dim=time_dim),
+                    # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
+                    Downsample(dim_in, dim_out)
+                    if not is_last
+                    else nn.Conv2d(dim_in, dim_out, 3, padding=1),
+                ])
+            )
+            
+            # down feature mapa
+            self.down_feature_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(self.clip_channels[ind], 1, kernel_size=1),
+                    nn.ZeroPad2d(0) # padding nastavime ve forward
+                )
+            )
+            
+            # up feature mapa - stejna jako down
+            self.up_feature_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(self.clip_channels[ind], 1, kernel_size=1),
+                    nn.ZeroPad2d(0) # padding nastavime ve forward
                 )
             )
 
@@ -254,16 +269,14 @@ class Unet(nn.Module):
             is_last = ind == (len(in_out) - 1)
 
             self.ups.append(
-                nn.ModuleList(
-                    [
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                        Upsample(dim_out, dim_in)
-                        if not is_last
-                        else nn.Conv2d(dim_out, dim_in, 3, padding=1),
-                    ]
-                )
+                nn.ModuleList([
+                    block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                    block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                    # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
+                    Upsample(dim_out, dim_in)
+                    if not is_last
+                    else nn.Conv2d(dim_out, dim_in, 3, padding=1),
+                ])
             )
 
         self.out_dim = default(out_dim, channels)
@@ -271,7 +284,7 @@ class Unet(nn.Module):
         self.final_res_block = block_klass(init_dim * 2, init_dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
-    def forward(self, x, time, grayscale=None, x_self_cond=None):
+    def forward(self, x, time, grayscale=None, x_self_cond=None, clip_features=None):
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim=1)
@@ -281,20 +294,51 @@ class Unet(nn.Module):
 
         x = self.init_conv(x)
         r = x.clone()
-
         t = self.time_mlp(time)
-
         h = []
+        
+        # clip features
+        down_features = []
+        if clip_features is not None:
+            for i, (conv_down, conv_up) in enumerate(zip(self.down_feature_convs, self.up_feature_convs)):
+                layer_name = ['relu3', 'layer1', 'layer2', 'layer3'][i]
+                feat = clip_features[layer_name]
+                
+                # spocitani paddingu
+                _, _, h_feat, w_feat = feat.shape
+                _, _, h_x, w_x = x.shape if i == 0 else h[-2].shape
+                
+                pad_h = (h_x - h_feat)
+                pad_w = (w_x - w_feat)
+                pad_top = pad_h // 2
+                pad_bottom = pad_h - pad_top
+                pad_left = pad_w // 2
+                pad_right = pad_w - pad_left
+                
+                # update paddingu
+                conv_down[1].padding = (pad_left, pad_right, pad_top, pad_bottom)
+                conv_up[1].padding = (pad_left, pad_right, pad_top, pad_bottom)
+                
+                # process
+                down_feat = conv_down(feat)
+                up_feat = conv_up(feat)
+                down_features.append((down_feat, up_feat))
 
         # for block1, block2, attn, downsample in self.downs:
-        for block1, block2, downsample in self.downs:
+        for i, (block1, block2, downsample) in enumerate(self.downs):
             x = block1(x, t)
+            
+            # pridani down feature
+            if clip_features is not None and i < len(down_features):
+                feat, _ = down_features[i]
+                x = torch.cat([x, feat], dim=1)
+            
             h.append(x)
-
+            
             x = block2(x, t)
             # x = attn(x)
             h.append(x)
-
+            
             x = downsample(x)
 
         x = self.mid_block1(x, t)
@@ -302,18 +346,20 @@ class Unet(nn.Module):
         x = self.mid_block2(x, t)
 
         # for block1, block2, attn, upsample in self.ups:
-        for block1, block2, upsample in self.ups:
+        for i, (block1, block2, upsample) in enumerate(self.ups):
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
-
+            
             x = torch.cat((x, h.pop()), dim=1)
+            
+            if clip_features is not None and (len(self.ups)-1-i) < len(down_features):
+                _, feat = down_features[len(self.ups)-1-i]
+                x = torch.cat([x, feat], dim=1)
+            
             x = block2(x, t)
-            # x = attn(x)
-
             x = upsample(x)
 
         x = torch.cat((x, r), dim=1)
-
         x = self.final_res_block(x, t)
         return self.final_conv(x)
 

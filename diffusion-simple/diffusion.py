@@ -4,6 +4,8 @@ from pathlib import Path
 from collections import deque
 import pickle
 import os
+import clip
+import matplotlib.pyplot as plt
 
 from torchvision import transforms as T
 
@@ -21,6 +23,55 @@ from scheduling import linear_beta_schedule, extract
 from model import load_model, load_ema, load_optimizer, save_model, save_ema, save_optimizer, Unet
 from scheduling import Schedule, ScheduleDDIM, save_schedule_kwargs, load_schedule_kwargs
 
+def tensor_to_pil(img_tensor):
+    # First convert from [-1,1] to [0,1]
+    img_tensor = (img_tensor + 1) / 2
+    # Clamp to ensure values are in valid range
+    img_tensor = torch.clamp(img_tensor, 0, 1)
+    # Convert to PIL
+    return torchvision.transforms.ToPILImage()(img_tensor)
+
+def visualize_feature_maps(feature_maps, num_features=4):
+    plt.figure(figsize=(15, 10))
+
+    for i, (layer_name, feature_map) in enumerate(feature_maps.items()):
+        for j in range(min(num_features, feature_map.size(1))):
+            plt.subplot(len(feature_maps), num_features, i * num_features + j + 1)
+            plt.imshow(feature_map[0, j].cpu().detach().numpy(), cmap='viridis')
+            plt.title(f"{layer_name} - ch{j}")
+            plt.axis('off')
+
+    plt.tight_layout()
+    plt.savefig('RESNET_feature_maps.png')
+    plt.show()
+
+# extract resnet feature maps
+def extract_clip_rn50_features(visual_model, input_image, layers_to_extract=None):
+
+    if layers_to_extract is None:
+        layers_to_extract = ['relu3', 'layer1', 'layer2', 'layer3']
+
+    feature_maps = {}
+
+    def get_activation(name):
+        def hook(model, input, output):
+            feature_maps[name] = output
+        return hook
+
+    hooks = []
+    for name in layers_to_extract:
+        if name == 'relu3':
+            layer = visual_model.relu3
+        else:
+            layer = getattr(visual_model, name)
+        hooks.append(layer.register_forward_hook(get_activation(name)))
+
+    _ = visual_model(input_image)
+
+    for hook in hooks:
+        hook.remove()
+
+    return feature_maps
 
 # forward diffusion (using the nice property)
 def q_sample(x_start, t, sched, noise=None):
@@ -44,12 +95,12 @@ def get_noisy_image(x_start, t, sched):
 
   return noisy_image
 
-def p_losses(denoise_model, x_start, t, sched, grayscale=None, noise=None, loss_type="l2"):
+def p_losses(denoise_model, x_start, t, sched, grayscale=None, clip_features=None, noise=None, loss_type="l2"):
     if noise is None:
         noise = torch.randn_like(x_start)
 
     x_noisy = q_sample(x_start=x_start, t=t, sched=sched, noise=noise)
-    predicted_noise = denoise_model(x_noisy, t, grayscale=grayscale)
+    predicted_noise = denoise_model(x_noisy, t, grayscale=grayscale, clip_features=clip_features)
 
     if loss_type == "l1":
         loss = F.l1_loss(noise, predicted_noise)
@@ -83,10 +134,10 @@ def q_posterior(x_start, x_t, t, sched):
     return posterior_mean, posterior_variance_t
 
 @torch.no_grad()
-def p_sample(model, x, t, t_index, sched, grayscale=None):
+def p_sample(model, x, t, t_index, sched, grayscale=None, clip_features=None):
     # Equation 11 by using reconstructed x_0 in eq. 7.
     # Basically eq. 11 unsimplified, in order to clip intermediate x_0 into proper range.
-    predicted_noise = model(x, t, grayscale=grayscale)
+    predicted_noise = model(x, t, grayscale=grayscale, clip_features=clip_features)
     x_recon = predict_start_from_noise(x, t, predicted_noise, sched)
     x_recon = torch.clamp(x_recon, min=-1., max=1.)
     model_mean, posterior_variance_t = q_posterior(x_start=x_recon, x_t=x, t=t, sched=sched)
@@ -100,7 +151,7 @@ def p_sample(model, x, t, t_index, sched, grayscale=None):
 
 # Algorithm 2
 @torch.no_grad()
-def p_sample_loop(model, shape, sched, grayscale=None):
+def p_sample_loop(model, shape, sched, grayscale=None, clip_features=None):
     device = next(model.parameters()).device
 
     b = shape[0]
@@ -108,14 +159,14 @@ def p_sample_loop(model, shape, sched, grayscale=None):
     imgs = torch.randn(shape, device=device)
 
     for i in tqdm(reversed(range(0, sched.timesteps)), desc="Sampling loop time step", total=sched.timesteps, unit="step", leave=False):
-        imgs = p_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale)
+        imgs = p_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale, clip_features=clip_features)
     return imgs
 
 @torch.no_grad()
-def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=False, grayscale=None):
+def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=False, grayscale=None, clip_features=None):
     # DDPM Equation 11 by using reconstructed x_0 in eq. 7.
     # Basically eq. 11 unsimplified, in order to clip intermediate x_0 into proper range.
-    eps = predicted_noise = model(x, sched.transform_times(t), grayscale=grayscale)
+    eps = predicted_noise = model(x, sched.transform_times(t), grayscale=grayscale, clip_features=clip_features)
     x_recon = predict_start_from_noise(x, t, predicted_noise, sched)
     x_recon = torch.clamp(x_recon, min=-1., max=1.)
     model_mean, _posterior_variance_t = q_posterior(x_start=x_recon, x_t=x, t=t, sched=sched)
@@ -149,24 +200,24 @@ def ddim_sample(model, x, t, t_index, sched, eta=0.0, rederive_eps_from_recon=Fa
         return model_mean + sigma * noise
 
 @torch.no_grad()
-def ddim_sample_loop(model, shape, sched, grayscale=None):
+def ddim_sample_loop(model, shape, sched, grayscale=None, clip_features=None):
     device = next(model.parameters()).device
 
     b = shape[0]
     imgs = torch.randn(shape, device=device)
 
     for i in tqdm(reversed(range(0, sched.timesteps)), desc="Sampling loop time step", total=sched.timesteps, unit="step", leave=False):
-        imgs = ddim_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale)
+        imgs = ddim_sample(model, imgs, torch.full((b,), i, device=device, dtype=torch.long), i, sched, grayscale=grayscale, clip_features=clip_features)
     return imgs
 
 @torch.no_grad()
-def sample(model, image_size, batch_size=16, channels=3, *, sched, grayscale=None):
+def sample(model, image_size, batch_size=16, channels=3, *, sched, grayscale=None, clip_features=None):
     if isinstance(sched, ScheduleDDIM):
-        return ddim_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale)
+        return ddim_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale, clip_features=clip_features)
     else:
-        return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale)
+        return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size), sched=sched, grayscale=grayscale, clip_features=clip_features)
 
-def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, channels, sched, grayscale=None):
+def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, channels, sched, grayscale=None, clip_features=None):
     results_folder = folder / "results"
     results_folder.mkdir(exist_ok=True, parents=True)
     batches = num_to_groups(1, microbatch_size)
@@ -185,7 +236,8 @@ def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, 
             image_size=image_size, 
             batch_size=n, 
             channels=channels,
-            grayscale=grayscale[:n] if grayscale is not None else None
+            grayscale=grayscale[:n] if grayscale is not None else None,
+            clip_features=clip_features[:n] if clip_features is not None else None
         ), 
         batches
     ))
@@ -238,7 +290,7 @@ if __name__ == "__main__":
     learning_rate = 1e-4
     epochs = 500
     batch_size = 256
-    microbatch_size = 8
+    microbatch_size = 64
     save_and_sample_every = 250  # nth batch
     log_interval = 50
 
@@ -248,11 +300,11 @@ if __name__ == "__main__":
 
     # train_dset_path = Path(args.dataset) / "train_imgs" / f"resized_{image_size}"
     # val_dset_path = Path(args.dataset) / "val_imgs" / f"resized_{image_size}"
-    # train_dset_path = Path(args.dataset) / "cifar_train"
-    # val_dset_path = Path(args.dataset) / "cifar_test"
+    train_dset_path = Path(args.dataset) / "cifar_train"
+    val_dset_path = Path(args.dataset) / "cifar_test"
 
-    train_dset_path = Path(args.dataset) / "train_imgs"
-    val_dset_path = Path(args.dataset) / "val_imgs"
+    # train_dset_path = Path(args.dataset) / "train_imgs"
+    # val_dset_path = Path(args.dataset) / "val_imgs"
 
     out_path = Path("./out") / name
 
@@ -309,6 +361,11 @@ if __name__ == "__main__":
         ema_model = load_ema(ema_checkpoint_path, "train")
         print(f"Loaded old model, starting on epoch {start_epoch}")
 
+    resnet_full, resnet_preprocess = clip.load("RN50", device="cpu")
+    resnet_visual = resnet_full.visual
+    resnet_visual.train()
+    resnet_visual.to(device)
+
     schedule = Schedule(**schedule_kwargs)
     ddim_schedule = ScheduleDDIM(ddim_timesteps, schedule, **schedule_kwargs)
 
@@ -331,6 +388,29 @@ if __name__ == "__main__":
                 # Get both the color image and grayscale conditioning
                 microbatch = batch["img"][i : i + microbatch_size].to(device)
                 grayscale = batch["grayscale"][i : i + microbatch_size].to(device)
+
+                # exemplar = batch["exemplar"][i : i + microbatch_size].to(device)
+                # Get exemplar image (could be the same as input image or different)
+                exemplar = batch["img"][i : i + microbatch_size].to(device)
+                
+                # Process each exemplar image separately for CLIP
+                feature_maps_batch = {}
+                selected_layers = ['relu3', 'layer1', 'layer2', 'layer3']
+                
+                # Process the batch
+                all_features_list = []
+                for j in range(exemplar.shape[0]):
+                    pil_image = tensor_to_pil(exemplar[j])
+                    clip_input = resnet_preprocess(pil_image).unsqueeze(0).to(device)
+                    
+                    features = extract_clip_rn50_features(resnet_visual, clip_input, selected_layers)
+                    
+                    all_features_list.append(features)
+
+                clip_features = {}
+                for layer_name in selected_layers:
+                    layer_features = torch.cat([feat[layer_name] for feat in all_features_list], dim=0)
+                    clip_features[layer_name] = layer_features
                 
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 

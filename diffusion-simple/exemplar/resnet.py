@@ -11,7 +11,7 @@ def extract_clip_rn50_features(model, input_image, layers_to_extract=None):
     visual_model = model.visual  # ResNet50 část CLIPu
 
     if layers_to_extract is None:
-        layers_to_extract = ['conv1', 'layer1', 'layer2', 'layer3', 'layer4']
+        layers_to_extract = ['relu3', 'layer1', 'layer2', 'layer3']
 
     feature_maps = {}
 
@@ -22,11 +22,13 @@ def extract_clip_rn50_features(model, input_image, layers_to_extract=None):
 
     hooks = []
     for name in layers_to_extract:
-        layer = getattr(visual_model, name)
+        if name == 'relu3':
+            layer = visual_model.relu3
+        else:
+            layer = getattr(visual_model, name)
         hooks.append(layer.register_forward_hook(get_activation(name)))
 
-    with torch.no_grad():
-        _ = visual_model(input_image)
+    _ = visual_model(input_image)
 
     for hook in hooks:
         hook.remove()
@@ -39,7 +41,7 @@ def visualize_feature_maps(feature_maps, num_features=4):
     for i, (layer_name, feature_map) in enumerate(feature_maps.items()):
         for j in range(min(num_features, feature_map.size(1))):
             plt.subplot(len(feature_maps), num_features, i * num_features + j + 1)
-            plt.imshow(feature_map[0, j].cpu().numpy(), cmap='viridis')
+            plt.imshow(feature_map[0, j].cpu().detach().numpy(), cmap='viridis')
             plt.title(f"{layer_name} - ch{j}")
             plt.axis('off')
 
@@ -52,7 +54,7 @@ def main(image_path="sample_image.png"):
     model, preprocess = clip.load("RN50", device=device)
 
     image_tensor = load_and_preprocess_image(image_path, preprocess, device)
-    selected_layers = ['conv1', 'layer1', 'layer2', 'layer3', 'layer4']
+    selected_layers = ['relu3', 'layer1', 'layer2', 'layer3']
 
     feature_maps = extract_clip_rn50_features(model, image_tensor, selected_layers)
 
