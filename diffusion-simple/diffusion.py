@@ -170,38 +170,38 @@ def track_samples(folder, epoch, milestone, model, microbatch_size, image_size, 
     results_folder = folder / "results"
     results_folder.mkdir(exist_ok=True, parents=True)
     batches = num_to_groups(1, microbatch_size)
-    
+
     # If grayscale is None, create a random grayscale image for visualization
     if grayscale is None:
         # Create a random grayscale image (1 channel)
         sample_grayscale = torch.rand((1, 1, image_size, image_size), device=next(model.parameters()).device) * 2 - 1
         # Repeat for all samples
         grayscale = sample_grayscale.repeat(microbatch_size, 1, 1, 1)
-    
+
     all_images_list = list(map(
         lambda n: sample(
-            model, 
-            sched=sched, 
-            image_size=image_size, 
-            batch_size=n, 
+            model,
+            sched=sched,
+            image_size=image_size,
+            batch_size=n,
             channels=channels,
             grayscale=grayscale[:n] if grayscale is not None else None
         ), 
         batches
     ))
-    
+
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
-    
+
     # Save both the grayscale input and colorized output side by side
     if grayscale is not None:
         grayscale_display = grayscale[:1].repeat(1, 3, 1, 1)  # Convert single channel to 3 channels for display
         grayscale_display = (grayscale_display + 1) / 2  # Convert from [-1,1] to [0,1]
-        
+
         # Create a grid with grayscale on left, colorized on right
         comparison = torch.cat([grayscale_display, all_images[:1]], dim=0)
         torchvision.utils.save_image(comparison, results_folder / f"comparison-{epoch}-{milestone}.png", nrow=1)
-    
+
     # Save the colorized outputs
     torchvision.utils.save_image(all_images, results_folder / f"sample-{epoch}-{milestone}.png", nrow=1)
 
@@ -332,7 +332,7 @@ if __name__ == "__main__":
                 # Get both the color image and grayscale conditioning
                 microbatch = batch["img"][i : i + microbatch_size].to(device)
                 grayscale = batch["grayscale"][i : i + microbatch_size].to(device)
-                
+
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 
                 # Pass grayscale to p_losses
@@ -347,11 +347,10 @@ if __name__ == "__main__":
 
             if step != 0 and step % save_and_sample_every == 0:
                 milestone = step // save_and_sample_every
-                track_samples(out_path, epoch, milestone, model, microbatch_size, image_size, channels, sched=schedule, grayscale=grayscale)
+                track_samples(out_path, epoch, milestone, model, microbatch_size, image_size, channels, sched=ddim_schedule, grayscale=grayscale)
 
             step += 1
 
         history[epoch] = loss_history
         save_all(epoch, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
-#        f epoch % 5 == 0:
-        track_samples(out_path, epoch, "last", model, microbatch_size, image_size, channels, sched=schedule, grayscale=grayscale)
+        track_samples(out_path, epoch, "last", model, microbatch_size, image_size, channels, sched=ddim_schedule, grayscale=grayscale)
