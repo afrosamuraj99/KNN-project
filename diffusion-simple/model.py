@@ -221,7 +221,7 @@ class Unet(nn.Module):
         )
 
         # pocet kanalu CLIPu
-        self.clip_channels = [256, 256, 512, 1024]  
+        self.clip_channels = [64, 256, 512, 1024]  
         
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
@@ -235,7 +235,7 @@ class Unet(nn.Module):
 
             self.downs.append(
                 nn.ModuleList([
-                    block_klass(dim_in, dim_in, time_emb_dim=time_dim),
+                    block_klass(dim_in + 1, dim_in, time_emb_dim=time_dim),
                     block_klass(dim_in, dim_in, time_emb_dim=time_dim),
                     # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
                     Downsample(dim_in, dim_out)
@@ -271,7 +271,7 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                        block_klass(dim_out + dim_in + 1, dim_out, time_emb_dim=time_dim),
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         Upsample(dim_out, dim_in)
@@ -287,28 +287,62 @@ class Unet(nn.Module):
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
     def forward(self, x, time, grayscale=None, x_self_cond=None, clip_features=None):
+
+        
+        # print(f"CLIP features structure:")
+        # for k, v in clip_features.items():
+            # print(f"{k}: {v.shape}")
+
+        # Debug initial inputs
+        # print(f"\n=== Initial Inputs ===")
+        # print(f"Input x shape: {x.shape}")
+        # print(f"Time shape: {time.shape}")
+        # if grayscale is not None:
+            # print(f"Grayscale shape: {grayscale.shape}")
+        # if x_self_cond is not None:
+            # print(f"Self condition shape: {x_self_cond.shape}")
+        # if clip_features is not None:
+            # print(f"CLIP features keys: {clip_features.keys()}")
+
+        # Handle self-conditioning and grayscale
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim=1)
+            # print(f"\nAfter self-conditioning, x shape: {x.shape}")
 
         if grayscale is not None:
             x = torch.cat((x, grayscale), dim=1)
+            # print(f"After grayscale concatenation, x shape: {x.shape}")
 
+        # Initial convolution
         x = self.init_conv(x)
         r = x.clone()
         t = self.time_mlp(time)
         h = []
-        
-        # clip features
+        # print(f"\nAfter init_conv - x shape: {x.shape}")
+        # print(f"Time embedding shape: {t.shape}")
+
+        # Process CLIP features
         down_features = []
         if clip_features is not None:
+            # print("\n=== Processing CLIP Features ===")
             for i, (conv_down, conv_up) in enumerate(zip(self.down_feature_convs, self.up_feature_convs)):
                 layer_name = ['relu3', 'layer1', 'layer2', 'layer3'][i]
                 feat = clip_features[layer_name]
+                # print(f"\nCLIP layer {layer_name} feature shape: {feat.shape}")
                 
-                # spocitani paddingu
+                # Calculate padding - use x.shape for first block, h[-2] for others
+                if i == 0:
+                    # For first block, use x after init_conv
+                    _, _, h_x, w_x = x.shape
+                else:
+                    # For subsequent blocks, we need to predict what the shape will be after downsampling
+                    # This depends on your architecture - for standard UNet with halving at each step:
+                    h_x = 32 // (2 ** i)
+                    w_x = 32 // (2 ** i)
+                
                 _, _, h_feat, w_feat = feat.shape
-                _, _, h_x, w_x = x.shape if i == 0 else h[-2].shape
+                # print(f"Target shape for feature {i}: ({h_x}, {w_x})")
                 
                 pad_h = (h_x - h_feat)
                 pad_w = (w_x - w_feat)
@@ -317,57 +351,98 @@ class Unet(nn.Module):
                 pad_left = pad_w // 2
                 pad_right = pad_w - pad_left
                 
-                # update paddingu
+                # print(f"Padding for feature {i}: (left={pad_left}, right={pad_right}, top={pad_top}, bottom={pad_bottom})")
+                
+                # Update padding
                 conv_down[1].padding = (pad_left, pad_right, pad_top, pad_bottom)
                 conv_up[1].padding = (pad_left, pad_right, pad_top, pad_bottom)
                 
-                # process
+                # Process features
                 down_feat = conv_down(feat)
                 up_feat = conv_up(feat)
+                # print(f"Processed down feature {i} shape: {down_feat.shape}")
+                # print(f"Processed up feature {i} shape: {up_feat.shape}")
+                
                 down_features.append((down_feat, up_feat))
 
-        # for block1, block2, attn, downsample in self.downs:
+        # Downsample path
+        # print("\n=== Downsample Path ===")
         for i, (block1, block2, downsample) in enumerate(self.downs):
+            # print(f"\nDown block {i}")
+            # print(f"Input shape: {x.shape}")
             
-            # pridani down feature
+            # Add down feature if available
             if clip_features is not None and i < len(down_features):
                 feat, _ = down_features[i]
+                # print(f"Adding down feature {i} with shape: {feat.shape}")
                 x = torch.cat([x, feat], dim=1)
+                # print(f"After feature concatenation: {x.shape}")
             
             x = block1(x, t)
-
+            # print(f"After block1: {x.shape}")
             h.append(x)
             
             x = block2(x, t)
-            # x = attn(x)
+            # print(f"After block2: {x.shape}")
             h.append(x)
             
             x = downsample(x)
+            # print(f"After downsample: {x.shape}")
 
+        # Middle blocks
+        # print("\n=== Middle Blocks ===")
+        # print(f"Input shape: {x.shape}")
         x = self.mid_block1(x, t)
+        # print(f"After mid_block1: {x.shape}")
         x = self.mid_attn(x)
+        # print(f"After attention: {x.shape}")
         x = self.mid_block2(x, t)
+        # print(f"After mid_block2: {x.shape}")
 
-        # for block1, block2, attn, upsample in self.ups:
+        # Upsample path
+        # print("\n=== Upsample Path ===")
         for i, (block1, block2, upsample) in enumerate(self.ups):
-            x = torch.cat((x, h.pop()), dim=1)
+            # print(f"\nUp block {i}")
+            # print(f"Current x shape: {x.shape}")
+            # print(f"Popping from h (shape: {h[-1].shape})")
             
-            if clip_features is not None and (len(self.ups)-1-i) < len(down_features):
-                _, feat = down_features[len(self.ups)-1-i]
+            x = torch.cat((x, h.pop()), dim=1)
+            # print(f"After first cat with h: {x.shape}")
+            
+            # Add up feature if available
+            reverse_idx = len(self.ups)-1-i
+            if clip_features is not None and reverse_idx < len(down_features):
+                _, feat = down_features[reverse_idx]
+                # print(f"Adding up feature {reverse_idx} with shape: {feat.shape}")
                 x = torch.cat([x, feat], dim=1)
+                # print(f"After feature concatenation: {x.shape}")
             
             x = block1(x, t)
+            # print(f"After block1: {x.shape}")
             
+            # print(f"Popping from h (shape: {h[-1].shape})")
             x = torch.cat((x, h.pop()), dim=1)
+            # print(f"After second cat with h: {x.shape}")
             
             x = block2(x, t)
-            # x = attn(x)
-
+            # print(f"After block2: {x.shape}")
+            
             x = upsample(x)
+            # print(f"After upsample: {x.shape}")
 
+        # Final processing
+        # print("\n=== Final Processing ===")
+        # print(f"x shape: {x.shape}")
+        # print(f"r shape: {r.shape}")
         x = torch.cat((x, r), dim=1)
+        # print(f"After final cat with r: {x.shape}")
         x = self.final_res_block(x, t)
-        return self.final_conv(x)
+        # print(f"After final res block: {x.shape}")
+        output = self.final_conv(x)
+        # print(f"Final output shape: {output.shape}")
+
+        
+        return output
 
 
 def save_model(model, unet_kwargs, path):

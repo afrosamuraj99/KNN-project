@@ -414,7 +414,7 @@ if __name__ == "__main__":
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 
                 # Pass grayscale to p_losses
-                loss = p_losses(model, microbatch, t, schedule, grayscale=grayscale, loss_type="l2")
+                loss = p_losses(model, microbatch, t, schedule, grayscale=grayscale, clip_features=clip_features, loss_type="l2")
                 loss_item = loss.item()
                 loss_history.append(loss_item)
 
