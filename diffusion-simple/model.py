@@ -328,13 +328,14 @@ class Unet(nn.Module):
 
         # for block1, block2, attn, downsample in self.downs:
         for i, (block1, block2, downsample) in enumerate(self.downs):
-            x = block1(x, t)
             
             # pridani down feature
             if clip_features is not None and i < len(down_features):
                 feat, _ = down_features[i]
                 x = torch.cat([x, feat], dim=1)
             
+            x = block1(x, t)
+
             h.append(x)
             
             x = block2(x, t)
@@ -350,13 +351,14 @@ class Unet(nn.Module):
         # for block1, block2, attn, upsample in self.ups:
         for i, (block1, block2, upsample) in enumerate(self.ups):
             x = torch.cat((x, h.pop()), dim=1)
-            x = block1(x, t)
-            
-            x = torch.cat((x, h.pop()), dim=1)
             
             if clip_features is not None and (len(self.ups)-1-i) < len(down_features):
                 _, feat = down_features[len(self.ups)-1-i]
                 x = torch.cat([x, feat], dim=1)
+            
+            x = block1(x, t)
+            
+            x = torch.cat((x, h.pop()), dim=1)
             
             x = block2(x, t)
             # x = attn(x)

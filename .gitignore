@@ -4,3 +4,4 @@ venv
 .venv
 /diffusion-simple/out
 .png
+/datasets
