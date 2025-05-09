@@ -4,12 +4,73 @@ import os
 import shutil
 
 import torch
+from torch.utils.data import Dataset as TorchDataset, DataLoader as TorchDataLoader, default_collate
+import torchvision.transforms.functional as F
+from torchvision import transforms as T
 import clip
 from tqdm import tqdm
+from PIL import Image
 
-# Run this file from the top-level project directory like this:
-# PYTHONPATH="diffusion-simple" CUDA_VISIBLE_DEVICES="3" uv run python -i scripts/find_nearest.py ...
-from data import setup_loader
+
+class DataTransform:
+    def __init__(self, transform):
+        self.transform = transform
+
+    def __call__(self, data):
+        if isinstance(data, list):
+            return default_collate([self.transform_one(x) for x in data])
+        else:
+            return self.transform_one(data)
+
+    def transform_one(self, data):
+        img = Image.open(data["img_path"]).convert("RGB")
+        data["img"] = self.transform(img)
+        return data
+
+
+class DatasetLister:
+    def __init__(self, path: str):
+        self.path = Path(path)
+        self.img_paths = []
+        for img_path in self.path.iterdir():
+            self.img_paths.append(str(img_path))
+
+    def __getitem__(self, i: int) -> dict:
+        data = {
+            "img_path": self.img_paths[i],
+        }
+        return data
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __iter__(self) -> Iterator[dict]:
+        for i in range(len(self.img_paths)):
+            yield {
+                "img_path": self.img_paths[i],
+            }
+
+
+class Dataset(TorchDataset):
+    def __init__(self, path: str, transform):
+        self.data = DatasetLister(path)
+        self.tx = DataTransform(transform)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i: int) -> dict:
+        return self.tx(self.data[i])
+
+
+def setup_loader(*, data_dir, batch_size, shuffle, transform):
+    dataset = Dataset(data_dir, transform)
+    loader = TorchDataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+    )
+    return loader
 
 
 if __name__ == "__main__":
