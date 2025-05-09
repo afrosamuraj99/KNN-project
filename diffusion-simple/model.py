@@ -269,14 +269,16 @@ class Unet(nn.Module):
             is_last = ind == (len(in_out) - 1)
 
             self.ups.append(
-                nn.ModuleList([
-                    block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                    block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                    # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                    Upsample(dim_out, dim_in)
-                    if not is_last
-                    else nn.Conv2d(dim_out, dim_in, 3, padding=1),
-                ])
+                nn.ModuleList(
+                    [
+                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                        # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
+                        Upsample(dim_out, dim_in)
+                        if not is_last
+                        else nn.Conv2d(dim_out, dim_in, 3, padding=1),
+                    ]
+                )
             )
 
         self.out_dim = default(out_dim, channels)
@@ -357,6 +359,8 @@ class Unet(nn.Module):
                 x = torch.cat([x, feat], dim=1)
             
             x = block2(x, t)
+            # x = attn(x)
+
             x = upsample(x)
 
         x = torch.cat((x, r), dim=1)
@@ -386,14 +390,14 @@ def save_optimizer(optimizer, path):
     }, path)
 
 def load_model(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
     with torch.device("meta"):
         model = Unet(**checkpoint["unet_kwargs"])
     model.load_state_dict(checkpoint["model_state_dict"], assign=True)
     return model
 
 def load_ema(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
 
     with torch.device("meta"):
         model = Unet(**checkpoint["unet_kwargs"])
@@ -413,7 +417,7 @@ def load_ema(path, mode):
     return ema_model
 
 def load_optimizer(path, model):
-    checkpoint = torch.load(path, weights_only=True, mmap=True)
-    optimizer = torch.optim.Adam(model.parameters())
+    checkpoint = torch.load(path, weights_only=True, mmap=False)
+    optimizer = torch.optim.AdamW(model.parameters())
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     return optimizer
