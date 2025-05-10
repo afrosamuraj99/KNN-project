@@ -19,9 +19,16 @@ from utils.misc import (
     exists, default, num_to_groups, transform,
     reverse_transform, latest_checkpoint,
 )
+from utils.contextual_loss import (
+    get_feature_similarities, similarities_to_loss_mod_forward
+)
 from scheduling import linear_beta_schedule, extract
 from model import load_model, load_ema, load_optimizer, save_model, save_ema, save_optimizer, Unet
 from scheduling import Schedule, ScheduleDDIM, save_schedule_kwargs, load_schedule_kwargs
+
+from torchvision import models
+import torchvision.transforms as transforms
+from PIL import Image
 
 def tensor_to_pil(img_tensor):
     # First convert from [-1,1] to [0,1]
@@ -30,20 +37,6 @@ def tensor_to_pil(img_tensor):
     img_tensor = torch.clamp(img_tensor, 0, 1)
     # Convert to PIL
     return torchvision.transforms.ToPILImage()(img_tensor)
-
-def visualize_feature_maps(feature_maps, num_features=4):
-    plt.figure(figsize=(15, 10))
-
-    for i, (layer_name, feature_map) in enumerate(feature_maps.items()):
-        for j in range(min(num_features, feature_map.size(1))):
-            plt.subplot(len(feature_maps), num_features, i * num_features + j + 1)
-            plt.imshow(feature_map[0, j].cpu().detach().numpy(), cmap='viridis')
-            plt.title(f"{layer_name} - ch{j}")
-            plt.axis('off')
-
-    plt.tight_layout()
-    plt.savefig('RESNET_feature_maps.png')
-    plt.show()
 
 # extract resnet feature maps
 def extract_clip_rn50_features(visual_model, input_image, layers_to_extract=None):
@@ -73,6 +66,43 @@ def extract_clip_rn50_features(visual_model, input_image, layers_to_extract=None
 
     return feature_maps
 
+def vgg_preprocess(image_path, size=(224, 224)):
+
+    transform = transforms.Compose([
+        transforms.Resize(size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    image = Image.open(image_path).convert('RGB')
+    
+    image_tensor = transform(image).unsqueeze(0)
+    
+    return image_tensor, image
+
+def extract_vgg19_features(vgg_model, input_image, layers_to_extract=None):
+    if layers_to_extract is None:
+        layers_to_extract = [8, 17, 26, 35]
+    
+    features = {}
+    def get_features(name):
+        def hook(model, input, output):
+            features[name] = output
+        return hook
+    
+    hooks = []
+    for layer_idx in layers_to_extract:
+        layer = vgg_model.features[layer_idx]
+        hooks.append(layer.register_forward_hook(get_features(f"layer_{layer_idx}")))
+    
+    with torch.no_grad():
+        vgg_model(input_image)
+    
+    for hook in hooks:
+        hook.remove()
+    
+    return features
+
 # forward diffusion (using the nice property)
 def q_sample(x_start, t, sched, noise=None):
     if noise is None:
@@ -95,7 +125,7 @@ def get_noisy_image(x_start, t, sched):
 
   return noisy_image
 
-def p_losses(denoise_model, x_start, t, sched, grayscale=None, clip_features=None, noise=None, loss_type="l2"):
+def p_losses(denoise_model, x_start, t, sched, grayscale=None, clip_features=None, exemplar=None, noise=None, loss_type="l2"):
     if noise is None:
         noise = torch.randn_like(x_start)
 
@@ -110,6 +140,34 @@ def p_losses(denoise_model, x_start, t, sched, grayscale=None, clip_features=Non
         loss = F.smooth_l1_loss(noise, predicted_noise)
     else:
         raise NotImplementedError()
+
+    if exemplar is not None:
+        predicted_x_start = predict_start_from_noise(x_noisy, t, predicted_noise, sched)
+        
+        vgg_input = torch.cat([predicted_x_start, exemplar], dim=0)
+        vgg_input = (vgg_input + 1) / 2
+        vgg_input = transforms.functional.normalize(vgg_input, 
+                                                    mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])
+
+        with torch.no_grad():
+            vgg_features = extract_vgg19_features(vgg19, vgg_input)
+        
+        batch_size = predicted_x_start.size(0)
+        pred_features = {k: v[:batch_size] for k, v in vgg_features.items()}
+        exemplar_features = {k: v[batch_size:] for k, v in vgg_features.items()}
+
+        ctx_losses = []
+        for layer_name in pred_features.keys():
+            cs = get_feature_similarities(
+                x=pred_features[layer_name], 
+                y=exemplar_features[layer_name]
+            )
+            
+            ctx_loss_layer = similarities_to_loss_mod_forward(cs)
+            ctx_losses.append(ctx_loss_layer)
+        
+        ctx_loss = sum(ctx_losses) / len(ctx_losses)
 
     return loss
 
@@ -365,6 +423,10 @@ if __name__ == "__main__":
     resnet_visual.train()
     resnet_visual.to(device)
 
+    vgg19 = models.vgg19(weights=models.VGG19_Weights.DEFAULT)
+    vgg19.eval()
+    vgg19.to(device)
+
     schedule = Schedule(**schedule_kwargs)
     ddim_schedule = ScheduleDDIM(ddim_timesteps, schedule, **schedule_kwargs)
 
@@ -414,7 +476,7 @@ if __name__ == "__main__":
                 t = torch.randint(0, schedule.timesteps, (microbatch.shape[0],), device=device).long()
 
                 # Pass grayscale to p_losses
-                loss = p_losses(model, microbatch, t, schedule, grayscale=grayscale, clip_features=clip_features, loss_type="l2")
+                loss = p_losses(model, microbatch, t, schedule, grayscale=grayscale, clip_features=clip_features, exemplar=exemplar, loss_type="l2")
                 loss_item = loss.item()
                 loss_history.append(loss_item)
 

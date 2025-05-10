@@ -20,26 +20,54 @@ def load_and_preprocess_image(image_path, size=(224, 224)):
     return image_tensor, image
 
 def extract_vgg19_features(input_image, layers_to_extract=None):
-
-    vgg19 = models.vgg19(weights=models.VGG19_Weights.DEFAULT)
-    vgg19.eval()
-    
-#    summary(vgg19, input_size=(1, 3, 224, 224))
+    vgg_model = models.vgg19(weights=models.VGG19_Weights.DEFAULT)
+    vgg_model.eval()
 
     if layers_to_extract is None:
-        layers_to_extract = [0, 2, 5, 7, 10, 12, 14, 16, 19, 21, 23, 25, 28, 30, 32, 34]
+        layers_to_extract = [8, 17, 26, 35]
     
-
-    feature_maps = {}
+    features = {}
+    def get_features(name):
+        def hook(model, input, output):
+            features[name] = output
+        return hook
+    
+    hooks = []
+    for layer_idx in layers_to_extract:
+        layer = vgg_model.features[layer_idx]
+        hooks.append(layer.register_forward_hook(get_features(f"layer_{layer_idx}")))
     
     with torch.no_grad():
-        x = input_image
-        for i, layer in enumerate(vgg19.features):
-            x = layer(x)
-            if i in layers_to_extract:
-                feature_maps[f"layer_{i}"] = x
+        vgg_model(input_image)
     
-    return feature_maps
+    for hook in hooks:
+        hook.remove()
+    
+    return features    
+
+# def extract_vgg19_features(input_image, layers_to_extract=None):
+
+#     vgg19 = models.vgg19(weights=models.VGG19_Weights.DEFAULT)
+#     vgg19.eval()
+    
+#     # summary(vgg19, input_size=(1, 3, 224, 224))
+
+#     if layers_to_extract is None:
+#         layers_to_extract = []
+    
+
+#     feature_maps = {}
+
+#     # print(vgg19.features)
+    
+#     with torch.no_grad():
+#         x = input_image
+#         for i, layer in enumerate(vgg19.features):
+#             x = layer(x)
+#             if i in layers_to_extract:
+#                 feature_maps[f"layer_{i}"] = x
+    
+#     return feature_maps
 
 def visualize_feature_maps(feature_maps, num_features=4):
 
@@ -61,7 +89,7 @@ def main(image_path="sample_image.png"):
 
     image_tensor, original_image = load_and_preprocess_image(image_path)
     
-    selected_layers = [0, 5, 10, 19, 28]
+    selected_layers = [8, 17, 26, 35]
     
     feature_maps = extract_vgg19_features(image_tensor, selected_layers)
     

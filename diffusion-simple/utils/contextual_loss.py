@@ -107,7 +107,7 @@ def similarities_to_loss_mod_forward(similarities):
     > This is because some objects in x may not exist in y.
     """
     # ((H W) is the x dim, C is the y dim)
-    k_max_NC = reduce(cs, "n h w c -> n (h w)", "max")
+    k_max_NC = reduce(similarities, "n h w c -> n (h w)", "max")
     cs = torch.mean(k_max_NC, dim=1)
     cx_loss = -torch.log(cs)
     return cx_loss
