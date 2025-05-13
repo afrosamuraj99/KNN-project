@@ -16,12 +16,6 @@ def num_to_groups(num, divisor):
         arr.append(remainder)
     return arr
 
-def transform(image):
-    return ((image / 255) * 2) - 1
-
-def reverse_transform(image):
-    return ((image + 1) / 2) * 255
-
 def latest_checkpoint(checkpoints_folder):
     latest_checkpoint_path = None
     latest_ema_checkpoint_path = None

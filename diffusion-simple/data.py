@@ -8,8 +8,9 @@ from PIL import Image
 
 
 class DataTransform:
-    def __init__(self, transform):
-        self.transform = transform
+    def __init__(self, transforms):
+        self.img_tx = transforms["img"]
+        self.ref_tx = transforms["ref"]
 
     def __call__(self, data):
         if isinstance(data, list):
@@ -21,9 +22,9 @@ class DataTransform:
         img = Image.open(data["img_path"]).convert("RGB")
         ref = Image.open(data["ref_path"]).convert("RGB")
 
-        data["img"] = self.transform(img)
-        data["ref"] = self.transform(ref)
+        data["img"] = self.img_tx(img)
         data["grayscale"] = data["img"].mean(dim=0, keepdim=True)
+        data["ref"] = self.ref_tx(ref)
 
         return data
 
@@ -59,9 +60,9 @@ class DatasetLister:
 
 
 class Dataset(TorchDataset):
-    def __init__(self, path: str, transform):
+    def __init__(self, path: str, transforms):
         self.data = DatasetLister(path)
-        self.tx = DataTransform(transform)
+        self.tx = DataTransform(transforms)
 
     def __len__(self):
         return len(self.data)
@@ -70,8 +71,8 @@ class Dataset(TorchDataset):
         return self.tx(self.data[i])
 
 
-def setup_loader(*, data_dir, batch_size, shuffle, transform):
-    dataset = Dataset(data_dir, transform)
+def setup_loader(*, data_dir, batch_size, shuffle, transforms):
+    dataset = Dataset(data_dir, transforms)
     loader = TorchDataLoader(
         dataset,
         batch_size=batch_size,
