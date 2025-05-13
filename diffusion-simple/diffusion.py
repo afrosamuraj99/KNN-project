@@ -18,7 +18,8 @@ from data import setup_loader
 from utils.misc import exists, default, num_to_groups, latest_checkpoint
 from utils.contextual_loss import ctx_loss_mod_forward_fused
 from scheduling import Schedule, ScheduleDDIM, save_schedule_kwargs, load_schedule_kwargs, linear_beta_schedule, extract
-from model import load_model, load_ema, load_optimizer, save_model, save_ema, save_optimizer, Unet
+from model import load_model, load_ema, load_optimizer, save_model, save_ema, save_optimizer, Unet as BigUnet
+from small_model import Unet as SmallUnet
 
 
 _clip_feature_maps = None
@@ -308,20 +309,24 @@ if __name__ == "__main__":
     ap.add_argument("--name", help="experiment name", required=True)
     ap.add_argument("--dataset", help="path to the dataset directory", required=True)
     ap.add_argument("--resolution", help="dataset resolution", required=True, type=int)
+    ap.add_argument("--lr", help="learning_rate", required=True, type=float)
+    group1 = ap.add_mutually_exclusive_group(required=True)
+    group1.add_argument("--small", help="use simpler model", action="store_true")
+    group1.add_argument("--big", help="use complicated model", action="store_true")
     args = ap.parse_args()
 
     name = args.name
     image_size = args.resolution
 
     channels = 3
-    init_dim = 128
-    dim_mults = (1, 2, 2, 2,)
+    init_dim = 16
+    dim_mults = (1, 2, 3, 4,)
 
     ema_decay = 0.9999
-    learning_rate = 3e-4
+    learning_rate = args.lr
     weight_ctx_loss = 1
 
-    epochs = 500
+    epochs = 1000
     batch_size = 32
     microbatch_size = 8
 
@@ -330,7 +335,6 @@ if __name__ == "__main__":
     betas_f = linear_beta_schedule
 
     train_dset_path = Path(args.dataset) / "train_imgs" / f"resized_{image_size}"
-    val_dset_path = Path(args.dataset) / "val_imgs" / f"resized_{image_size}"
 
     out_path = Path("./out") / name
 
@@ -343,6 +347,12 @@ if __name__ == "__main__":
         "init_dim": init_dim,
         "dim_mults": dim_mults,
     }
+    if args.small:
+        Model = SmallUnet
+    elif args.big:
+        Model = BigUnet
+    else:
+        raise RuntimeError("Should be unreachable")
 
     # Load old or create new denoising U-Net
     out_path.mkdir(exist_ok=True)
@@ -350,7 +360,7 @@ if __name__ == "__main__":
     if checkpoint_path is None:
         print("Creating new model")
         schedule_kwargs = {"betas": betas_f(timesteps=timesteps)}
-        model = Unet(**unet_kwargs)
+        model = Model(**unet_kwargs)
         model.to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0)
         ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(ema_decay))
@@ -367,7 +377,7 @@ if __name__ == "__main__":
             start_epoch = 1
         else:
             start_epoch = max(history_keys) + 1
-        model = load_model(checkpoint_path, "train")
+        model = load_model(checkpoint_path, Model, "train")
         model.to(device)
         optimizer = load_optimizer(optimizer_path, model)
         ema_model = load_ema(ema_checkpoint_path, "train")
@@ -422,11 +432,25 @@ if __name__ == "__main__":
     )
     nr_batches = math.ceil(len(train_dataloader.dataset) / batch_size)
     nr_micro_batches = math.ceil(batch_size / microbatch_size)
-    save_and_sample_every = 10  # nth batch
+    save_and_sample_every = nr_batches // 2  # nth batch
     log_interval = 10
 
     schedule = Schedule(**schedule_kwargs)
     ddim_schedule = ScheduleDDIM(ddim_timesteps, schedule, **schedule_kwargs)
+
+    # from torchinfo import summary
+    # from IPython import embed
+    # batch = next(iter(train_dataloader))
+    # img = batch["img"][:1].to(device)
+    # gs = batch["grayscale"][:1].to(device)
+    # ref = batch["ref"][:1].to(device)
+    # t = torch.randint(0, schedule.timesteps, (img.size(0),), device=device).long()
+    # clip_input = clip_normalization(ref)
+    # clip_features = extract_clip_features(clip_model, clip_input)
+    # s = summary(model, input_data=(img, t, gs, clip_features), col_names=("input_size", "output_size"), row_settings=("depth", "var_names"), depth=3, device=device, verbose=0)
+    # print(s)
+    # embed()
+    # exit()
 
     save_all(0, model, ema_model, optimizer, unet_kwargs, history, schedule_kwargs, out_path)
     step = 1

@@ -19,23 +19,6 @@ class Residual(nn.Module):
         return self.fn(x, *args, **kwargs) + x
 
 
-def Upsample(dim, dim_out=None):
-    return nn.Sequential(
-        nn.Upsample(scale_factor=2, mode="nearest"),
-        nn.Conv2d(dim, default(dim_out, dim), 3, padding=1),
-    )
-
-def Downsample(dim, dim_out=None):
-    # No More Strided Convolutions or Pooling
-    # return nn.Sequential(
-    #     Rearrange("b c (h p1) (w p2) -> b (c p1 p2) h w", p1=2, p2=2),
-    #     nn.Conv2d(dim * 4, default(dim_out, dim), 1),
-    # )
-    return nn.Sequential(
-            nn.Conv2d(dim, default(dim_out, dim), 1, stride=2),
-    )
-
-
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -51,45 +34,22 @@ class SinusoidalPositionEmbeddings(nn.Module):
         return embeddings
 
 
-class WeightStandardizedConv2d(nn.Conv2d):
-    """
-    https://arxiv.org/abs/1903.10520
-    weight standardization purportedly works synergistically with group normalization
-    """
-
-    def forward(self, x):
-        eps = 1e-5 if x.dtype == torch.float32 else 1e-3
-
-        weight = self.weight
-        mean = reduce(weight, "o ... -> o 1 1 1", "mean")
-        var = reduce(weight, "o ... -> o 1 1 1", partial(torch.var, unbiased=False))
-        normalized_weight = (weight - mean) * (var + eps).rsqrt()
-
-        return F.conv2d(
-            x,
-            normalized_weight,
-            self.bias,
-            self.stride,
-            self.padding,
-            self.dilation,
-            self.groups,
-        )
-
-
 class Block(nn.Module):
-    def __init__(self, dim, dim_out, groups=8):
+    def __init__(self, dim, dim_out, downsample=False):
         super().__init__()
-        self.proj = WeightStandardizedConv2d(dim, dim_out, 3, padding=1)
-        self.norm = nn.GroupNorm(groups, dim_out)
-        self.act = nn.SiLU()
+        self.conv = nn.Conv2d(dim, dim_out, 3, padding=1, stride=2 if downsample else 1, bias=False)
+        self.bn = nn.BatchNorm2d(dim_out)
+        self.act = nn.ReLU(inplace=True)
 
-    def forward(self, x, scale_shift=None):
-        x = self.proj(x)
-        x = self.norm(x)
+    def forward(self, x, scale_shift=None, shift=None):
+        x = self.conv(x)
+        x = self.bn(x)
 
         if exists(scale_shift):
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
+        elif exists(shift):
+            x = x + shift
 
         x = self.act(x)
         return x
@@ -98,17 +58,27 @@ class Block(nn.Module):
 class ResnetBlock(nn.Module):
     """https://arxiv.org/abs/1512.03385"""
 
-    def __init__(self, dim, dim_out, *, time_emb_dim=None, groups=8):
+    def __init__(self, dim, dim_out, downsample=False, *, time_emb_dim=None):
         super().__init__()
+
         self.mlp = (
             nn.Sequential(nn.SiLU(), nn.Linear(time_emb_dim, dim_out * 2))
             if exists(time_emb_dim)
             else None
         )
 
-        self.block1 = Block(dim, dim_out, groups=groups)
-        self.block2 = Block(dim_out, dim_out, groups=groups)
-        self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        self.block1 = Block(dim, dim_out, downsample)
+        self.block2 = Block(dim_out, dim_out)
+        self.fixer = nn.Conv2d(
+            dim, dim_out, kernel_size=1, stride=2 if downsample else 1, bias=False
+        ) if (dim != dim_out or downsample) else nn.Identity()
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x, time_emb=None):
         scale_shift = None
@@ -118,8 +88,8 @@ class ResnetBlock(nn.Module):
             scale_shift = time_emb.chunk(2, dim=1)
 
         h = self.block1(x, scale_shift=scale_shift)
-        h = self.block2(h)
-        return h + self.res_conv(x)
+        h = self.block2(h, shift=self.fixer(x))
+        return h
 
 
 class Attention(nn.Module):
@@ -194,22 +164,20 @@ class Unet(nn.Module):
         channels,
         init_dim,
         dim_mults,
-        resnet_block_groups=4,
         grayscale_channels=1,
+        reference_channels=3,
     ):
         super().__init__()
 
         self.image_size = image_size
         self.channels = channels
         self.grayscale_channels = grayscale_channels
-
-        input_channels = channels + grayscale_channels
-        self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0)
+        self.reference_channels = reference_channels
 
         dims = [init_dim, *map(lambda m: init_dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
-        block_klass = partial(ResnetBlock, groups=resnet_block_groups)
+        block_klass = ResnetBlock
         time_dim = init_dim * 4
 
         self.time_mlp = nn.Sequential(
@@ -223,6 +191,9 @@ class Unet(nn.Module):
         self.clip_channels = [64, 256, 512, 1024]
         self.clip_sizes = [112, 56, 28, 14]
         self.clip_paddings = []
+
+        input_channels = channels + grayscale_channels
+        self.init_conv = nn.Conv2d(input_channels, init_dim, 1, padding=0)
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
@@ -253,19 +224,15 @@ class Unet(nn.Module):
 
             self.downs.append(
                 nn.ModuleList([
-                    block_klass(dim_in + 1, dim_in, time_emb_dim=time_dim),
-                    block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                    # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
-                    Downsample(dim_in, dim_out)
-                    if not is_last
-                    else nn.Conv2d(dim_in, dim_out, 3, padding=1),
+                    block_klass(dim_in + reference_channels, dim_out, downsample=True, time_emb_dim=time_dim),
+                    block_klass(dim_out, dim_out, time_emb_dim=time_dim),
                 ])
             )
 
             # down feature mapa
             self.down_feature_convs.append(
                 nn.Sequential(
-                    nn.Conv2d(self.clip_channels[idx], 1, kernel_size=1),
+                    nn.Conv2d(self.clip_channels[idx], reference_channels, kernel_size=1),
                     nn.ZeroPad2d(padding)
                 )
             )
@@ -273,7 +240,7 @@ class Unet(nn.Module):
             # up feature mapa
             self.up_feature_convs.append(
                 nn.Sequential(
-                    nn.Conv2d(self.clip_channels[idx], 1, kernel_size=1),
+                    nn.Conv2d(self.clip_channels[idx], reference_channels, kernel_size=1),
                     nn.ZeroPad2d(padding)
                 )
             )
@@ -287,16 +254,11 @@ class Unet(nn.Module):
             is_last = idx == (len(in_out) - 1)
 
             self.ups.append(
-                nn.ModuleList(
-                    [
-                        block_klass(dim_out + dim_in + 1, dim_out, time_emb_dim=time_dim),
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                        Upsample(dim_out, dim_in)
-                        if not is_last
-                        else nn.Conv2d(dim_out, dim_in, 3, padding=1),
-                    ]
-                )
+                nn.ModuleList([
+                    block_klass(dim_out + dim_out + (0 if idx == 0 else reference_channels), dim_out, time_emb_dim=time_dim),
+                    block_klass(dim_out + dim_out, dim_in, time_emb_dim=time_dim),
+                    nn.Upsample(scale_factor=2, mode="nearest"),
+                ])
             )
 
         self.final_res_block = block_klass(init_dim * 2, init_dim, time_emb_dim=time_dim)
@@ -345,7 +307,7 @@ class Unet(nn.Module):
 
         # Downsample path
         # print("\n=== Downsample Path ===")
-        for i, (block1, block2, downsample) in enumerate(self.downs):
+        for i, (block1, block2) in enumerate(self.downs):
             # print(f"\nDown block {i}")
             # print(f"Input shape: {x.shape}")
 
@@ -363,9 +325,6 @@ class Unet(nn.Module):
             x = block2(x, t)
             # print(f"After block2: {x.shape}")
             h.append(x)
-
-            x = downsample(x)
-            # print(f"After downsample: {x.shape}")
 
         # Middle blocks
         # print("\n=== Middle Blocks ===")
@@ -388,8 +347,8 @@ class Unet(nn.Module):
             # print(f"After first cat with h: {x.shape}")
 
             # Add up feature if available
-            reverse_idx = len(self.ups)-1-i
-            if clip_features is not None and reverse_idx < len(clip_maps):
+            reverse_idx = len(self.ups) - i
+            if clip_features is not None and reverse_idx < len(clip_maps) and i > 0:
                 _, feat = clip_maps[reverse_idx]
                 # print(f"Adding up feature {reverse_idx} with shape: {feat.shape}")
                 x = torch.cat([x, feat], dim=1)
@@ -419,64 +378,3 @@ class Unet(nn.Module):
         output = self.final_conv(x)
         # print(f"Final output shape: {output.shape}")
         return output
-
-
-def save_model(model, unet_kwargs, path):
-    for attr in ["grayscale_channels", "reference_channels"]:
-        if hasattr(model, "attr") and "attr" not in unet_kwargs:
-            unet_kwargs["attr"] = model.grayscale_channels
-
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "unet_kwargs": unet_kwargs,
-    }, path)
-
-
-def save_ema(ema_model, ema_decay, unet_kwargs, path):
-    torch.save({
-        "model_state_dict": ema_model.state_dict(),
-        "ema_decay": ema_decay,
-        "unet_kwargs": unet_kwargs,
-    }, path)
-
-
-def save_optimizer(optimizer, path):
-    torch.save({
-        "optimizer_state_dict": optimizer.state_dict(),
-    }, path)
-
-
-def load_model(path, model_class, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=False)
-    with torch.device("meta"):
-        model = model_class(**checkpoint["unet_kwargs"])
-    model.load_state_dict(checkpoint["model_state_dict"], assign=True)
-    return model
-
-
-def load_ema(path, mode):
-    checkpoint = torch.load(path, weights_only=True, mmap=False)
-
-    with torch.device("meta"):
-        model = Unet(**checkpoint["unet_kwargs"])
-        ema_model = torch.optim.swa_utils.AveragedModel(
-            model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"])
-        )
-
-    ema_model.load_state_dict(checkpoint["model_state_dict"], assign=True)
-
-    if mode == "eval":
-        ema_model.eval()
-    elif mode == "train":
-        ema_model.train()
-    else:
-        RuntimeError("Supported modes are 'eval' or 'train'")
-
-    return ema_model
-
-
-def load_optimizer(path, model):
-    checkpoint = torch.load(path, weights_only=True, mmap=False)
-    optimizer = torch.optim.AdamW(model.parameters())
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    return optimizer

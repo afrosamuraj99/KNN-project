@@ -12,7 +12,8 @@ import clip
 from PIL import Image
 from tqdm import tqdm
 
-from model import load_model, load_ema
+from model import load_model, load_ema, Unet as BigUnet
+from small_model import Unet as SmallUnet
 from utils.misc import num_to_groups, latest_checkpoint, epoch_checkpoint
 from diffusion import sample, predict_start_from_noise, extract_clip_features, hook_clip
 from scheduling import Schedule, ScheduleDDIM, load_schedule_kwargs, linear_beta_schedule, extract
@@ -229,6 +230,10 @@ if __name__ == "__main__":
     group2.add_argument("--ddim", action="store_true")
     group2.add_argument("--altddim", action="store_true")
 
+    group3 = ap.add_mutually_exclusive_group(required=True)
+    group3.add_argument("--small", help="is a simpler model", action="store_true")
+    group3.add_argument("--big", help="is a complicated model", action="store_true")
+
     ap.add_argument("--colored", required=True, help="Path to a colored dataset, will be converted to grayscale")
     ap.add_argument("--resolution", required=True, help="Resolution of --colored images", type=int)
     ap.add_argument("--out", required=True)
@@ -306,7 +311,13 @@ if __name__ == "__main__":
         load_model = load_ema
 
     print(f"Loading model: {ckpt}")
-    model = load_model(ckpt, "eval")
+    if args.small is True:
+        Model = SmallUnet
+    elif args.big is True:
+        Model = BigUnet
+    else:
+        raise RuntimeError("Should be unreachable")
+    model = load_model(ckpt, Model, "eval")
 
     device = (
         torch.accelerator.current_accelerator() if torch.accelerator.is_available() else torch.device("cpu")
