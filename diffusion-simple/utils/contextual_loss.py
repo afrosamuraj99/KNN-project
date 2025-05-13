@@ -49,6 +49,70 @@ def normalized_similarities(scaled_distances, b=1.0, h=0.1, axis_for_normalizati
     return cs_NHWC
 
 
+def create_using_dotP(x, y, sigma=0.1, b=1.0):
+    # Work seperatly for each pair (x_i, y_i) of examples in dim 1, i == j
+    cosine_sim_l = []
+    count = y.size(0)
+    for i in range(count):
+        # One y image and one x image
+        y_i = y[i, :, :, :].unsqueeze(0)
+        # Convolution input formatting, 1HWC --> 1CHW
+        x_i = x[i, :, :, :].unsqueeze(0).permute((0, 3, 1, 2))
+        # Convolution filter formatting, 1HWC --> PC11, with P=H*W
+        # Pixels (out dim) -> Channels = (in dim) -> 1 = (kx) -> 1 = (ky)
+        patches_PC11_i = patch_decomposition(y_i)
+        cosine_sim_i_1CHW = torch.nn.functional.conv2d(x_i, patches_PC11_i)
+        cosine_sim_i_1HWC = cosine_sim_i_1CHW.permute((0, 2, 3, 1))
+        cosine_sim_l.append(cosine_sim_i_1HWC)
+
+    cosine_sim = torch.cat(cosine_sim_l, dim=0)
+    raw_dist = 1 - cosine_sim
+    relative_dist = relative_distances(raw_dist)
+    cs = normalized_similarities(relative_dist)
+
+    return cs, relative_dist, raw_dist
+
+
+def get_feature_similarities(x, y):
+    x = rearrange(x, "n c h w -> n h w c")
+    y = rearrange(y, "n c h w -> n h w c")
+    y_centered, x_centered = center_by_y(y, x)
+    x_centered_normalized = l2_normalize_channelwise(x_centered)
+    y_centered_normalized = l2_normalize_channelwise(y_centered)
+    cs, relative_dist, raw_dist = create_using_dotP(x_centered_normalized, y_centered_normalized)
+    return cs
+
+
+def similarities_to_loss_og_backward(similarities):
+    """
+    The Contextual Loss for Image Transformation with Non-Aligned Data (https://arxiv.org/abs/1803.02077)
+    > To calculate the similarity between the images,
+    > we find for each feature y_j the feature x_i that
+    > is most similar to it, and then sum the corresponding
+    > feature similarity values over all y_j.
+    """
+    # ((H W) is the x dim, C is the y dim)
+    k_max_NC = reduce(similarities, "n h w c -> n c", "max")
+    cs = torch.mean(k_max_NC, dim=1)
+    cx_loss = -torch.log(cs)
+    return cx_loss
+
+
+def similarities_to_loss_mod_forward(similarities):
+    """
+    Deep Exemplar-based Video Colorization (https://arxiv.org/abs/1906.09909)
+    > Contrary to the backward matching in [45], we
+    > use forward matching where for each feature x_i
+    > we find the closest feature y_j.
+    > This is because some objects in x may not exist in y.
+    """
+    # ((H W) is the x dim, C is the y dim)
+    k_max_NC = reduce(similarities, "n h w c -> n (h w)", "max")
+    cs = torch.mean(k_max_NC, dim=1)
+    cx_loss = -torch.log(cs)
+    return cx_loss
+
+
 def ctx_loss_mod_forward_fused(x, y):
     x = rearrange(x, "n c h w -> n h w c")
     y = rearrange(y, "n c h w -> n h w c")
@@ -96,7 +160,7 @@ def test():
     a = torch.tensor(1., requires_grad=True)
     b = torch.tensor(1., requires_grad=True)
 
-    x = a * torch.tensor([
+    x = torch.tensor([
         # [
         #     [[1,2,3], [4,5,6], [7,8,9]], # row 1
         #     [[9,10,11], [12,13,14], [15,16,17]], # row 2
@@ -123,16 +187,60 @@ def test():
         #     [[2,3,4,5,6], [2,3,4,5,6], [2,3,4,5,6]], # row 2
         # ],
     ], dtype=torch.float32)
-    # noise = torch.tensor(np.random.normal(loc=0, scale=25, size=x.shape), dtype=torch.float32)
-    # x = x + noise
-    y = b * (x.detach().clone())  # Should lead to CX = 1 for each (x_i, y_i) pair
+    noise = torch.tensor(np.random.normal(loc=0, scale=25, size=x.shape), dtype=torch.float32)
+    x = x + noise
+    y = x.detach().clone()  # Should lead to CX = 1 for each (x_i, y_i) pair
     # y = torch.cat([x[None, 1], x[None, 0]]) # Should lead to CX != 1 for each (x_i, y_i) pair
     # y = x[None, 1]
     # x = x[None, 0]
+    print("\nx")
+    print(x)
+
+    y_centered, x_centered = center_by_y(y, x)
+    print("\nx_centered")
+    print(x_centered)
+
+    x_centered_normalized = l2_normalize_channelwise(x_centered)
+    y_centered_normalized = l2_normalize_channelwise(y_centered)
+    print("\nx_centered_normalized")
+    print(x_centered_normalized)
+
+    cs, relative_dist, raw_dist = create_using_dotP(x_centered_normalized, y_centered_normalized)
+    print("Real CD")
+    print(raw_dist)
+    print("Relative")
+    print(relative_dist)
+    print("Softmaxed")
+    print(cs)
+
+    print("\nFinalization original")
+    k_max_NC = reduce(cs, "n h w c -> n c", "max")
+    print(k_max_NC)
+    CS_og = torch.mean(k_max_NC, dim=1)
+    CX_loss_og = -torch.log(CS_og)
+    print(CS_og)
+
+    print("\nFinalization forward")
+    k_max_NC = reduce(cs, "n h w c -> n (h w)", "max")
+    print(k_max_NC)
+    CS_fw = torch.mean(k_max_NC, dim=1)
+    CX_loss_fw = -torch.log(CS_fw)
+    print(CS_fw)
+
     x_NCHW = rearrange(x, "n h w c -> n c h w")
     y_NCHW = rearrange(y, "n h w c -> n c h w")
-    ctx_loss = ctx_loss_mod_forward_fused(x_NCHW, y_NCHW)
-    ctx_loss.mean().backward()
+    cs_api = get_feature_similarities(x_NCHW, y_NCHW)
+    print("CD")
+    print(cs)
+    print("\nCD API")
+    print(cs_api)
+    assert (cs == cs_api).all()
+    print("API matches test")
+
+    ctx_loss_by_parts = similarities_to_loss_mod_forward(cs)
+    ctx_loss_fused = ctx_loss_mod_forward_fused(x_NCHW, y_NCHW)
+    assert (ctx_loss_by_parts == ctx_loss_fused).all()
+    print("Fused API matches by-part API")
 
 
 if __name__ == "__main__":
