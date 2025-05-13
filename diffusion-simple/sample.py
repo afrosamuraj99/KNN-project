@@ -7,16 +7,17 @@ from functools import partial
 import torch
 import torchvision
 import torchvision.transforms.functional as F
+import torchvision.transforms as T
+import clip
 from PIL import Image
 from tqdm import tqdm
 
 from model import load_model, load_ema
 from utils.misc import num_to_groups, latest_checkpoint, epoch_checkpoint
-from diffusion import sample, predict_start_from_noise
+from diffusion import sample, predict_start_from_noise, extract_clip_features, hook_clip
 from scheduling import Schedule, ScheduleDDIM, load_schedule_kwargs, linear_beta_schedule, extract
 
 
-USE_ALT_DDIM_IMPL = False
 picked_sample_fn = None
 
 
@@ -66,79 +67,113 @@ def get_sched_kwargs_v2():
     return sched_kwargs
 
 
-def do(model, out, num_samples, batch_size, sched, grayscale_path=None):
+def do(model, device, image_size, out, num_samples, batch_size, sched, images_path, with_reference):
     global picked_sample_fn
 
-    batches = num_to_groups(num_samples, batch_size)
-    device = next(model.parameters()).device
+    out = Path(out)
+    img_base_path = Path(images_path)
+    ref_base_path = img_base_path.with_name(img_base_path.name + "_references")
 
-    grayscale_cond = None
-    if grayscale_path:
-        dataset = list(Path(grayscale_path).glob("*.png")) + list(Path(grayscale_path).glob("*.jpg"))
-        if len(dataset) == 0:
-            raise ValueError("Dataset path does not contain any valid images.")
+    cpu = torch.device("cpu")
+    model.to(device)
+    model.eval()
+    if with_reference is True:
+        resnet_full, _resnet_preprocess = clip.load("RN50", device="cpu")
+        clip_model = resnet_full.visual
+        clip_model.eval()
+        clip_model.to(device)
+        _clip_hooks = hook_clip(clip_model)
+        ref_transform = T.Compose([
+            T.Resize(clip_model.input_resolution, interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(clip_model.input_resolution),
+            T.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+        ])
 
-        # Select 16 unique random images
-        selected_images = random.sample(dataset, min(len(dataset), num_samples))
+    # Select 16 unique random images
+    # selected_images = random.sample(dataset, min(len(dataset), num_samples))
+    selected_images = []
+    for idx, img_path in enumerate(img_base_path.iterdir()):
+        if num_samples != -1 and idx == num_samples:
+            break
+        selected_images.append(img_path.name)
 
-        # Process all selected images
-        grayscale_tensors = []
-        color_images = []
-        for img_path in selected_images:
+    if len(selected_images) == 0:
+        raise ValueError("Colored path does not contain any images.")
+
+    if num_samples != -1:
+        batches = num_to_groups(num_samples, batch_size)
+        assert len(batches) == 1
+    else:
+        batches = num_to_groups(len(selected_images), batch_size)
+
+    # Process all selected images
+    finished = 0
+    for n in batches:
+        colored_images = []
+        grayscale_images = []
+        reference_images = []
+        image_names = selected_images[finished : finished + n]
+
+        for img_name in image_names:
+            img_path = img_base_path / img_name
             color_img = Image.open(img_path).convert("RGB")
-            color_img = color_img.resize((32, 32))
             color_tensor = F.to_tensor(color_img)
-            color_images.append(color_tensor)
+            colored_images.append(color_tensor)
 
             grayscale_tensor = color_tensor.mean(dim=0, keepdim=True)
-            grayscale_tensor = (grayscale_tensor * 2) - 1
-            grayscale_tensors.append(grayscale_tensor)
+            grayscale_images.append(grayscale_tensor)
 
-        grayscale_cond = torch.stack(grayscale_tensors).to(device)
-        color_display = torch.stack(color_images).to(device)  # Přesun na stejné zařízení jako model
+            if with_reference is True:
+                img_path = ref_base_path / img_name
+                ref_img = Image.open(img_path).convert("RGB")
+                ref_tensor = F.to_tensor(ref_img)
+                reference_images.append(ref_tensor)
 
-        # Save original color images (top half)
-        color_display_save = (color_display * 2) - 1
-        torchvision.utils.save_image(color_display_save, out, nrow=8)
-    else:
-        grayscale_cond = torch.rand((batch_size, 1, 32, 32), device=device) * 2 - 1
+        grayscale_cond = ((torch.stack(grayscale_images) * 2) - 1).to(device)
 
-    # Generate colorized versions (bottom half)
-    all_images_list = list(map(
-        lambda n: picked_sample_fn(
+        if with_reference is True:
+            ref_cond = torch.stack(reference_images).to(device)
+            clip_input = ref_transform(ref_cond)
+            clip_features = extract_clip_features(clip_model, clip_input)
+
+        # Generate colorized versions (bottom half)
+        generated = picked_sample_fn(
             model,
             sched=sched,
-            image_size=32,
+            image_size=image_size,
             batch_size=n,
             channels=3,
-            grayscale=grayscale_cond[:n] if grayscale_cond is not None else None
-        ),
-        batches
-    ))
+            grayscale=grayscale_cond,
+            clip_features=clip_features if with_reference is True else None,
+        )
+        generated_display = (generated + 1) / 2
+        generated_display = generated_display.to(cpu)
 
-    all_images = torch.cat(all_images_list, dim=0)
-    all_images = (all_images + 1) / 2
-
-    # Combine original and colorized images
-    if grayscale_path:
-        combined_images = torch.cat([
-            color_display,  # Original color images (top)
-            all_images      # Colorized images (bottom)
-        ])
-        torchvision.utils.save_image(combined_images, out, nrow=8)
-    else:
-        torchvision.utils.save_image(all_images, out, nrow=8)
+        if num_samples != -1:
+            to_cat = []
+            color_display = torch.stack(colored_images, dim=0)
+            grayscale_display = torch.stack(grayscale_images, dim=0).repeat(1, 3, 1, 1)
+            if with_reference is True:
+                ref_display = F.resize(torch.stack(reference_images, dim=0), (image_size, image_size))
+                to_cat.append(ref_display)
+            to_cat.extend([color_display, grayscale_display, generated_display])
+            combined_images = torch.cat(to_cat, dim=0)
+            torchvision.utils.save_image(combined_images, out, nrow=len(to_cat))
+        else:
+            for name, generated in zip(image_names, generated_display):
+                torchvision.utils.save_image(generated, out / name)
+        finished += n
 
 
 @torch.inference_mode()
-def alt_ddim_sample_wrapper(model, *, image_size, batch_size, channels, sched, grayscale):
+def alt_ddim_sample_wrapper(model, *, image_size, batch_size, channels, sched, grayscale, clip_features):
     device = next(model.parameters()).device
     shape = (batch_size, channels, image_size, image_size)
-    return alt_ddim_sample(model, shape, device, sched.base.timesteps, sched.timesteps, 0.0, grayscale, sched)
+    return alt_ddim_sample(model, shape, device, sched.base.timesteps, sched.timesteps, 0.0, grayscale, clip_features, sched)
 
 
 @torch.inference_mode()
-def alt_ddim_sample(model, shape, device, total_timesteps, sampling_timesteps, eta, grayscale, sched, return_all_timesteps=False):
+def alt_ddim_sample(model, shape, device, total_timesteps, sampling_timesteps, eta, grayscale, clip_features, sched, return_all_timesteps=False):
     times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
     times = list(reversed(times.int().tolist()))
     time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
@@ -152,7 +187,7 @@ def alt_ddim_sample(model, shape, device, total_timesteps, sampling_timesteps, e
         time_cond = torch.full((shape[0],), time, device = device, dtype = torch.long)
         time_next_cond = torch.full((shape[0],), time_next, device = device, dtype = torch.long)
 
-        pred_noise = model(img, time_cond, grayscale=grayscale)
+        pred_noise = model(img, time_cond, grayscale=grayscale, clip_features=clip_features)
         x_start = predict_start_from_noise(img, time_cond, pred_noise, sched.base)
         x_start = torch.clamp(x_start, min=-1., max=1.)
 
@@ -192,30 +227,44 @@ if __name__ == "__main__":
     group2 = ap.add_mutually_exclusive_group(required=True)
     group2.add_argument("--ddpm", action="store_true")
     group2.add_argument("--ddim", action="store_true")
+    group2.add_argument("--altddim", action="store_true")
 
+    ap.add_argument("--colored", required=True, help="Path to a colored dataset, will be converted to grayscale")
+    ap.add_argument("--resolution", required=True, help="Resolution of --colored images", type=int)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--num_samples", required=True, type=int)
+    ap.add_argument("--batch_size", required=True, type=int)
+    ap.add_argument("--reference", action="store_true", help="Wheter to also include a reference images to the --colored ones")
     ap.add_argument("--ema", action="store_true")
-    ap.add_argument("--base_path", default="./out")
+    ap.add_argument("--base_path", default="out")
     ap.add_argument("--seed", default=None)
     ap.add_argument("--epoch", required=False, type=int, default=-1)
     ap.add_argument("--ddim_steps", required=False, type=int, default=25)
-    ap.add_argument("--num_samples", required=False, type=int, default=16)
-    ap.add_argument("--batch_size", required=False, type=int, default=16)
-    ap.add_argument("--grayscale", required=False, help="Path to grayscale image for conditioning", default="../diffusion/datasets/cifar_test")
 
     args = ap.parse_args()
-    base_path = Path(args.base_path)
-    seed = args.seed
 
+    if args.num_samples == -1:
+        out_dir_path = Path(args.out)
+        # Do not overwrite anything
+        assert not out_dir_path.exists()
+        out_dir_path.mkdir(exist_ok=False, parents=False)
+    else:
+        out_path = Path(args.out)
+        if out_path.exists():
+            # Do not overwrite directories
+            assert out_path.is_file()
+
+    seed = args.seed
     if seed is not None:
         random.seed(int(seed))
         torch.manual_seed(int(seed))
 
     picked_sample_fn = sample
-    if args.ddim is True:
-        if USE_ALT_DDIM_IMPL is True:
-            picked_sample_fn = alt_ddim_sample_wrapper
+    if args.altddim is True:
+        args.ddim = True
+        picked_sample_fn = alt_ddim_sample_wrapper
 
+    base_path = Path(args.base_path)
     if args.checkpoint is None:
         experiment_path = base_path / args.name
         ckpts_path = experiment_path / "checkpoints"
@@ -225,6 +274,9 @@ if __name__ == "__main__":
             ckpt, ema_ckpt, _opt_ckpt = latest_checkpoint(ckpts_path)
         else:
             ckpt, ema_ckpt, _opt_ckpt = epoch_checkpoint(ckpts_path, args.epoch)
+
+        if args.ema:
+            ckpt = ema_ckpt
 
         print(f"Loading schedule: {schedule_path}")
         sched_kwargs = load_schedule_kwargs(schedule_path)
@@ -259,9 +311,10 @@ if __name__ == "__main__":
     device = (
         torch.accelerator.current_accelerator() if torch.accelerator.is_available() else torch.device("cpu")
     )
-    model.to(device)
 
     print(f"Sampling")
-    do(model, args.out, args.num_samples, args.batch_size, 
+    do(
+        model, device, args.resolution, args.out, args.num_samples, args.batch_size,
         ddim_sched if args.ddim else sched,
-        grayscale_path=args.grayscale)
+        images_path=args.colored, with_reference=args.reference,
+    )

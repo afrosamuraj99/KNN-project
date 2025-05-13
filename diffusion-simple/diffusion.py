@@ -255,6 +255,7 @@ def track_samples(
         sample_grayscale = torch.rand((1, 1, image_size, image_size), device=next(model.parameters()).device) * 2 - 1
         grayscale = sample_grayscale.repeat(microbatch_size, 1, 1, 1)
 
+    model.eval()
     all_images_list = list(map(
         lambda n: sample(
             model,
@@ -267,6 +268,7 @@ def track_samples(
         ),
         batches
     ))
+    model.train()
 
     all_images = torch.cat(all_images_list, dim=0)
     all_images = (all_images + 1) / 2
@@ -320,7 +322,7 @@ if __name__ == "__main__":
     weight_ctx_loss = 1
 
     epochs = 500
-    batch_size = 256
+    batch_size = 32
     microbatch_size = 8
 
     timesteps = 1000

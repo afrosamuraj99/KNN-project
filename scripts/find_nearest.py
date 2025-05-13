@@ -44,7 +44,7 @@ class DatasetLister:
     def __len__(self):
         return len(self.img_paths)
 
-    def __iter__(self) -> Iterator[dict]:
+    def __iter__(self):
         for i in range(len(self.img_paths)):
             yield {
                 "img_path": self.img_paths[i],
@@ -83,6 +83,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", help="path to the dataset directory", required=True)
     ap.add_argument("--resolution", help="dataset resolution", required=True, type=int)
+    ap.add_argument("--split", help="dataset split", required=True)
     ap.add_argument("--batch-size", type=int, default="256")
     args = ap.parse_args()
 
@@ -91,13 +92,14 @@ if __name__ == "__main__":
     image_size = args.resolution
     batch_size = args.batch_size
     dataset_path_str = args.dataset
+    split = args.split
 
-    train_dset_path = Path(dataset_path_str) / "train_imgs" / f"resized_{image_size}"
-    references_path = train_dset_path.with_name(train_dset_path.name + "_references")
+    dset_path = Path(dataset_path_str) / f"{split}_imgs" / f"resized_{image_size}"
+    references_path = dset_path.with_name(dset_path.name + "_references")
     references_path.mkdir(exist_ok=True)
 
     train_dataloader = setup_loader(
-        data_dir=str(train_dset_path),
+        data_dir=str(dset_path),
         batch_size=batch_size,
         shuffle=False,
         transform=preprocess,
