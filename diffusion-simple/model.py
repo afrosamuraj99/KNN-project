@@ -196,6 +196,7 @@ class Unet(nn.Module):
         dim_mults,
         resnet_block_groups=4,
         grayscale_channels=1,
+        reference_channels=3,
     ):
         super().__init__()
 
@@ -253,7 +254,7 @@ class Unet(nn.Module):
 
             self.downs.append(
                 nn.ModuleList([
-                    block_klass(dim_in + 1, dim_in, time_emb_dim=time_dim),
+                    block_klass(dim_in + reference_channels, dim_in, time_emb_dim=time_dim),
                     block_klass(dim_in, dim_in, time_emb_dim=time_dim),
                     # Residual(PreNorm(dim_in, LinearAttention(dim_in))),
                     Downsample(dim_in, dim_out)
@@ -265,7 +266,7 @@ class Unet(nn.Module):
             # down feature mapa
             self.down_feature_convs.append(
                 nn.Sequential(
-                    nn.Conv2d(self.clip_channels[idx], 1, kernel_size=1),
+                    nn.Conv2d(self.clip_channels[idx], reference_channels, kernel_size=1),
                     nn.ZeroPad2d(padding)
                 )
             )
@@ -273,7 +274,7 @@ class Unet(nn.Module):
             # up feature mapa
             self.up_feature_convs.append(
                 nn.Sequential(
-                    nn.Conv2d(self.clip_channels[idx], 1, kernel_size=1),
+                    nn.Conv2d(self.clip_channels[idx], reference_channels, kernel_size=1),
                     nn.ZeroPad2d(padding)
                 )
             )
@@ -289,7 +290,7 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        block_klass(dim_out + dim_in + 1, dim_out, time_emb_dim=time_dim),
+                        block_klass(dim_out + dim_in + reference_channels, dim_out, time_emb_dim=time_dim),
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         # Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         Upsample(dim_out, dim_in)
@@ -454,11 +455,11 @@ def load_model(path, model_class, mode):
     return model
 
 
-def load_ema(path, mode):
+def load_ema(path, model_class, mode):
     checkpoint = torch.load(path, weights_only=True, mmap=False)
 
     with torch.device("meta"):
-        model = Unet(**checkpoint["unet_kwargs"])
+        model = model_class(**checkpoint["unet_kwargs"])
         ema_model = torch.optim.swa_utils.AveragedModel(
             model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(checkpoint["ema_decay"])
         )

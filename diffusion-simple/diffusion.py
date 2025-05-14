@@ -380,7 +380,7 @@ if __name__ == "__main__":
         model = load_model(checkpoint_path, Model, "train")
         model.to(device)
         optimizer = load_optimizer(optimizer_path, model)
-        ema_model = load_ema(ema_checkpoint_path, "train")
+        ema_model = load_ema(ema_checkpoint_path, Model, "train")
         print(f"Loaded old model, starting on epoch {start_epoch}")
 
     # CLIP model for reference image features extraction
