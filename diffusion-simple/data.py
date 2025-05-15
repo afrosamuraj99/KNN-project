@@ -71,11 +71,12 @@ class Dataset(TorchDataset):
         return self.tx(self.data[i])
 
 
-def setup_loader(*, data_dir, batch_size, shuffle, transforms):
+def setup_loader(*, data_dir, batch_size, shuffle, transforms, workers=0):
     dataset = Dataset(data_dir, transforms)
     loader = TorchDataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        num_workers=workers,
     )
     return loader
