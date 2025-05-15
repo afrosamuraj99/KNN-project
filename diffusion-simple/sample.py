@@ -152,14 +152,15 @@ def do(model, device, image_size, out, num_samples, batch_size, sched, images_pa
 
         if num_samples != -1:
             to_cat = []
-            color_display = torch.stack(colored_images, dim=0)
-            grayscale_display = torch.stack(grayscale_images, dim=0).repeat(1, 3, 1, 1)
-            if with_reference is True:
-                ref_display = F.resize(torch.stack(reference_images, dim=0), (image_size, image_size))
-                to_cat.append(ref_display)
-            to_cat.extend([color_display, grayscale_display, generated_display])
+            for idx in range(num_samples):
+                if with_reference is True:
+                    ref_display = F.resize(reference_images[idx], (image_size, image_size))
+                    to_cat.append(ref_display.unsqueeze(0))
+                to_cat.append(colored_images[idx].unsqueeze(0))
+                to_cat.append(grayscale_images[idx].repeat(3, 1, 1).unsqueeze(0))
+                to_cat.append(generated_display[idx].unsqueeze(0))
             combined_images = torch.cat(to_cat, dim=0)
-            torchvision.utils.save_image(combined_images, out, nrow=len(to_cat))
+            torchvision.utils.save_image(combined_images, out, nrow=4 if with_reference is True else 3)
         else:
             for name, generated in zip(image_names, generated_display):
                 torchvision.utils.save_image(generated, out / name)
