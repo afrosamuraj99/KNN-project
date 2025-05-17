@@ -13,6 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from model import load_model, load_ema, Unet as BigUnet
+from model_gs import load_model as load_model_gs, load_ema as load_ema_gs, Unet as UnetGS
 from small_model import Unet as SmallUnet
 from utils.misc import num_to_groups, latest_checkpoint, epoch_checkpoint
 from diffusion import sample, predict_start_from_noise, extract_clip_features, hook_clip
@@ -234,6 +235,7 @@ if __name__ == "__main__":
     group3 = ap.add_mutually_exclusive_group(required=True)
     group3.add_argument("--small", help="is a simpler model", action="store_true")
     group3.add_argument("--big", help="is a complicated model", action="store_true")
+    group3.add_argument("--other", help="from different times", action="store_true")
 
     ap.add_argument("--colored", required=True, help="Path to a colored dataset, will be converted to grayscale")
     ap.add_argument("--resolution", required=True, help="Resolution of --colored images", type=int)
@@ -293,7 +295,8 @@ if __name__ == "__main__":
 
         lut = {
             "2": (load_model_v2, load_ema_v2, get_sched_kwargs_v2),
-            "3": (load_model, load_ema, partial(load_schedule_kwargs, Path(ckpt).parent.parent / "schedule_kwargs.pt"))
+            "3": (load_model, load_ema, partial(load_schedule_kwargs, Path(ckpt).parent.parent / "schedule_kwargs.pt")),
+            "gs": (load_model_gs, load_ema_gs, partial(load_schedule_kwargs, Path(ckpt).parent.parent / "schedule_kwargs.pt")),
         }
 
         if version not in lut:
@@ -312,13 +315,16 @@ if __name__ == "__main__":
         load_model = load_ema
 
     print(f"Loading model: {ckpt}")
-    if args.small is True:
-        Model = SmallUnet
-    elif args.big is True:
-        Model = BigUnet
+    if args.other is False:
+        if args.small is True:
+            Model = SmallUnet
+        elif args.big is True:
+            Model = BigUnet
+        else:
+            raise RuntimeError("Should be unreachable")
+        model = load_model(ckpt, Model, "eval")
     else:
-        raise RuntimeError("Should be unreachable")
-    model = load_model(ckpt, Model, "eval")
+        model = load_model(ckpt, "eval")
 
     device = (
         torch.accelerator.current_accelerator() if torch.accelerator.is_available() else torch.device("cpu")
