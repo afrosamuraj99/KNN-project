@@ -9,7 +9,7 @@ Example usage:
         python preprocess.py ../models/ColorizeNet/out_imgs/512 data/colorizenet_coco_val_512_all.npz 512 all
 
     Evaluation:
-        python evaluate.py data/coco_train_512_10k.npz data/colorizenet_coco_val_512_all.npz | tee results/coco_train_512_10k_colorizenet_coco_val_512_all.txt
+        python evaluator.py data/coco_train_512_10k.npz data/colorizenet_coco_val_512_all.npz | tee results/coco_train_512_10k_colorizenet_coco_val_512_all.txt
 """
 
 import argparse
@@ -73,7 +73,9 @@ def main():
     samples = np.array(samples)
     print("Samples shape:", samples.shape)
     assert samples.shape == (nr_samples, img_size, img_size, 3)
-    np.savez(args.ref_batch, samples,
+    out_path = Path(args.ref_batch)
+    out_path.parent.mkdir(exist_ok=True, parents=True)
+    np.savez(out_path, samples,
              mu=ref_stats.mu, sigma=ref_stats.sigma,
              mu_s=ref_stats_spatial.mu, sigma_s=ref_stats_spatial.sigma)
 
@@ -135,6 +137,6 @@ class Batcher():
 
 
 if __name__ == "__main__":
-    from safe_gpu import safe_gpu
-    safe_gpu.claim_gpus(1, safe_gpu.TensorflowPlaceholder)
+    import os
+    assert len(os.environ["CUDA_VISIBLE_DEVICES"]) == 1
     main()
