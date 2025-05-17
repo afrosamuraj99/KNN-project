@@ -1,7 +1,7 @@
 --find-links https://download.pytorch.org/whl/torch_stable.html
 jax[cuda12]
 flax
-numpy
+numpy<2
 Pillow
 absl-py
 tqdm
