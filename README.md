@@ -50,3 +50,36 @@ CUDA_VISIBLE_DEVICES="x" uv run python sample.py --name experiment1 --resolution
 
 For other options, look at `--help`.
 
+## Evaluation
+
+### Generate image samples
+
+```sh
+CUDA_VISIBLE_DEVICES="x" uv run python sample.py --name experiment1 --resolution 128 --ddim --colored ../../datasets/coco/val_imgs/resized_128 --batch_size 256 --num_samples -1 --out eval_data --reference --big
+```
+
+### FID, sFID
+
+Change directory to `evaluation/fid`, create a python virtual environment and install dependencies from `requirements.txt`, activate it.
+
+Prepare reference input:
+
+```
+python preprocess.py ../datasets/coco/train_imgs/resized_128 data/coco_train_128_10k.npz 128 10000
+```
+
+Prepare generated input:
+
+```
+python preprocess.py eval_data data/ours_coco_val_128_all.npz 128 all
+```
+
+Evaluation:
+
+```
+python evaluator.py data/coco_train_128_10k.npz data/ours_coco_val_128_all.npz | tee results/coco_train_512_10k_ours_coco_val_128_all.txt
+```
+
+### CMMD
+
+Please follow the official instructions of [CMMD](https://github.com/google-research/google-research/tree/master/cmmd).
